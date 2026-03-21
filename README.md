@@ -8,11 +8,14 @@
 
 ## Introduction
 
-<div align="center">
-  <video src="figures/intro.mp4" width="800" controls>
-    Your browser does not support the video tag.
-  </video>
-</div>
+![intro](figures/intro.gif)
+
+Self-distillation allows a single model to serve as both teacher and student by conditioning the teacher on richer information, such as the ground-truth answer. Unlike conventional RLVR, it provides fine-grained credit assignment while retaining the simplicity of a single-model setup, and recent successes have drawn significant attention to this paradigm.
+
+However, we observe that in the math domain, self-distillation can lead to persistent performance degradation, even when the training signal points in the right direction. We trace this to the suppression of **epistemic verbalization**—the model’s tendency to explicitly reason about its own uncertainty during problem-solving. Because the teacher is conditioned on richer context, it produces confident reasoning that does not express uncertainty. As the student imitates this behavior, it progressively loses the ability to express and leverage uncertainty, undermining exploratory reasoning.
+
+We further find that the effectiveness of self-distillation is closely tied to task coverage. When coverage is narrow, suppressing uncertainty expressions shortens responses and drives rapid in-domain gains. However, as coverage broadens, the model struggles to generalize across a wider range of problems, and OOD performance degrades. This suggests that epistemic verbalization plays a crucial role in maintaining robust reasoning beyond the training distribution.
+
 
 ## Installation
 
@@ -107,3 +110,4 @@ bash eval.sh
 If you find this work helpful, please consider citing:
 
 ## Attribution
+Our code is built upon [SDPO](https://github.com/lasgroup/SDPO). We thank the authors of SDPO for their great research and for open-sourcing their codebase!
