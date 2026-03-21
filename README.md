@@ -40,13 +40,26 @@ python experiments/math/change_math_prompts.py
 
 
 ### Configuration
-```bash
-```
+
+Below are the key hyperparameter differences from the default [SDPO](https://github.com/lasgroup/SDPO) settings:
+
+| Parameter | Value |
+|-----------|-------|
+| `train_batch_size` | 256 |
+| `ppo_mini_batch_size` | 128 or 64 (minimal difference) |
+| `max_prompt_length` | 2048 |
+| `max_response_length` | 20480 |
+| `max_reprompt_len` | 22528 |
+| `teacher_update_rate` | 0 (main) / 0.05 (ablation) |
+| `remove_thinking_from_demonstration` | `False` for SDPO ($c=s$) / `True` for SDPO ($c = s_{\setminus\text{think}}$) |
+
+Note: The original `remove_thinking_from_demonstration` implementation strips `<think>...</think>` from the student response. However, for models like DeepSeek-R1-Distill-7B, the chat template already includes an opening `<think>` tag in the prompt, so the student response begins without an opening `<think>` but still contains a closing `</think>`. We modified `_remove_thinking_trace` in `verl/trainer/ppo/ray_trainer.py` to handle this case.
 
 ## Run Examples
 
 ### GRPO and SDPO Training
 ```bash
+
 ```
 ### Evaluation
 ```bash
