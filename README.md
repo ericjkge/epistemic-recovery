@@ -58,11 +58,23 @@ Note: The original `remove_thinking_from_demonstration` implementation strips `<
 ## Run Examples
 
 ### GRPO and SDPO Training
+To train with GRPO or SDPO on the full dataset, run:
 ```bash
-
+bash experiments/math/run_math_grpo.sh
+bash experiments/math/run_math_sdpo.sh
 ```
-### Evaluation
+
+For reproducing Section 6.2 (*"Relationship Between Task Coverage and Learning Performance"*) with a reduced question set, run:
 ```bash
+bash experiments/math/run_math_grpo_small_question.sh
+bash experiments/math/run_math_sdpo_small_question.sh
+```
+
+### Evaluation
+After training, merge the saved FSDP checkpoints into HF format before running evaluation.
+```bash
+bash eval/merge_models.sh
+bash eval/eval.sh
 ```
 
 ## Citation
