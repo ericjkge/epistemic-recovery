@@ -11,16 +11,18 @@
 ## Installation
 
 ### Data Preparation
+We primarily use the [DAPO-Math-17k](https://huggingface.co/datasets/BytedTsinghua-SIA/DAPO-Math-17k) dataset for training. You can download it by running:
 ```bash
 bash experiments/math/prepare_dapo_data.sh
 ```
 
+The dataset for Section 6.2 (*"Relationship Between Task Coverage and Learning Performance"*) and the evaluation datasets are available in the `/data/math` directory.
+
 ### Prompt Reformatting
+The DAPO-Math-17k dataset prompts the model to produce answers in the `Answer:` format. The following script reformats these prompts to elicit `\boxed{}` answers instead. We found that this reformatting consistently improved the model's accuracy.
 ```bash
 python experiments/math/change_math_prompts.py
 ```
-
-This script reformats the default instruction-style prompts to elicit `\boxed{}` answers instead of the `Answer:` format. We found that this reformatting consistently improved the model's accuracy.
 
 <details>
 <summary>See before/after example</summary>

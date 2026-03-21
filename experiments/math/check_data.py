@@ -1,6 +1,7 @@
 import pandas as pd
 
 df = pd.read_parquet("data/math/train.parquet")
+# df = pd.read_parquet("data/math/evaluation/aime24.parquet")
 
 print(f"Shape: {df.shape}")
 print(f"Columns: {df.columns.tolist()}")
