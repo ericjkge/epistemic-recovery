@@ -57,6 +57,25 @@ Note: The original `remove_thinking_from_demonstration` implementation strips `<
 
 ## Run Examples
 
+### Analyzing Reasoning Behavior Under Richer Information (Section 3)
+```bash
+cd analyzing_reasoning_behavior
+
+# Collect 100 questions from DAPO-Math-17k where the base model solves at a rate between 0.125 and 0.5, along with their solutions
+bash eval_dapo_dataset.sh
+
+# Re-evaluate the model with solutions provided as hints
+bash eval_with_hint.sh
+
+# Generate a summary report
+bash make_report.sh
+```
+
+The collected results are then used to construct the dataset for the SFT experiments in Section 4:
+```bash
+bash make_sft_dataset.sh
+```
+
 ### GRPO and SDPO Training
 To train with GRPO or SDPO on the full dataset, run:
 ```bash
@@ -73,8 +92,9 @@ bash experiments/math/run_math_sdpo_small_question.sh
 ### Evaluation
 After training, merge the saved FSDP checkpoints into HF format before running evaluation.
 ```bash
-bash eval/merge_models.sh
-bash eval/eval.sh
+cd eval
+bash merge_models.sh
+bash eval.sh
 ```
 
 ## Citation
