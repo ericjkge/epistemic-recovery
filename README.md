@@ -10,11 +10,11 @@
 
 ![intro](figures/intro.gif)
 
-Self-distillation allows a single model to serve as both teacher and student by conditioning the teacher on richer information, such as the ground-truth answer. Unlike conventional RLVR, it provides fine-grained credit assignment while retaining the simplicity of a single-model setup, and recent successes have drawn significant attention to this paradigm.
+Self-distillation lets a single model act as both teacher and student by conditioning the teacher on richer context (e.g., ground-truth solutions). It offers fine-grained credit assignment while keeping a simple setup, and has recently gained attention.
 
 However, we observe that in the math domain, self-distillation can lead to persistent performance degradation, even when the training signal points in the right direction. We trace this to the suppression of **epistemic verbalization**—the model’s tendency to explicitly reason about its own uncertainty during problem-solving. Because the teacher is conditioned on richer context, it produces confident reasoning that does not express uncertainty. As the student imitates this behavior, it progressively loses the ability to express and leverage uncertainty, undermining exploratory reasoning.
 
-We further find that the effectiveness of self-distillation is closely tied to task coverage. When coverage is narrow, suppressing uncertainty expressions shortens responses and drives rapid in-domain gains. However, as coverage broadens, the model struggles to generalize across a wider range of problems, and OOD performance degrades. This suggests that epistemic verbalization plays a crucial role in maintaining robust reasoning beyond the training distribution.
+We also observe that effectiveness depends on task coverage. With narrow coverage, suppressing uncertainty shortens responses and boosts in-domain performance. But as coverage broadens, generalization suffers and OOD performance declines, suggesting epistemic verbalization is key for robust reasoning.
 
 
 ## Installation
