@@ -86,6 +86,14 @@ bash make_sft_dataset.sh
 ```
 
 ### GRPO and SDPO Training
+Before running training, you need to set up your environment variables:
+
+1. Copy the sample environment file:
+```bash
+   cp .env.sample.local .env.local
+```
+2. Open `.env.local` and fill in your configuration values.
+
 To train with GRPO or SDPO on the full dataset, run:
 ```bash
 bash experiments/math/run_math_grpo.sh
