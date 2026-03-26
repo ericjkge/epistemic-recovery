@@ -2,7 +2,7 @@
 
 # Why Does Self-Distillation (Sometimes) Degrade the Reasoning Capability of LLMs?
 
-[![Paper](https://img.shields.io/badge/arXiv-xxxx.xxxx-F46565?style=flat&logo=arxiv&logoColor=white)](https://arxiv.org/abs/xxxx.xxxx) [![Code](https://img.shields.io/badge/GitHub-Code-000000?style=flat&logo=github&logoColor=white)](https://github.com/beanie00/self-distillation-analysis) [![W&B](https://img.shields.io/badge/W%26B-Logs-06B6D4?style=flat&logo=weightsandbiases&logoColor=white)](https://wandb.ai/beanie/SDPO-beanie/reports/Why-Does-Self-Distillation-Sometimes-Degrade-the-Reasoning-Capability-of-LLMs---VmlldzoxNjI1MTk5Mw) [![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97-HuggingFace-FEE47D?style=flat)](https://huggingface.co/collections/beanie00/self-distillation-analysis)
+[![Paper](https://img.shields.io/badge/arXiv-2603.24472-F46565?style=flat&logo=arxiv&logoColor=white)](https://arxiv.org/abs/2603.24472) [![Code](https://img.shields.io/badge/GitHub-Code-000000?style=flat&logo=github&logoColor=white)](https://github.com/beanie00/self-distillation-analysis) [![W&B](https://img.shields.io/badge/W%26B-Logs-06B6D4?style=flat&logo=weightsandbiases&logoColor=white)](https://wandb.ai/beanie/SDPO-beanie/reports/Why-Does-Self-Distillation-Sometimes-Degrade-the-Reasoning-Capability-of-LLMs---VmlldzoxNjI1MTk5Mw) [![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97-HuggingFace-FEE47D?style=flat)](https://huggingface.co/collections/beanie00/self-distillation-analysis)
 
 </div>
 
@@ -12,10 +12,12 @@
 
 Self-distillation lets a single model act as both teacher and student by conditioning the teacher on richer context (e.g., ground-truth solutions). It offers fine-grained credit assignment while keeping a simple setup, and has recently gained attention.
 
-However, we observe that in the math domain, self-distillation can lead to persistent performance degradation, even when the training signal points in the right direction. We trace this to the suppression of **epistemic verbalization**—the model’s tendency to explicitly reason about its own uncertainty during problem-solving. Because the teacher is conditioned on richer context, it produces confident reasoning that does not express uncertainty. As the student imitates this behavior, it progressively loses the ability to express and leverage uncertainty, undermining exploratory reasoning.
 
-We also observe that effectiveness depends on task coverage. With narrow coverage, suppressing uncertainty shortens responses and boosts in-domain performance. But as coverage broadens, generalization suffers and OOD performance declines, suggesting epistemic verbalization is key for robust reasoning.
+⚠️  However, in the math domain, self-distillation can lead to **persistent performance degradation**, even when the training signal points in the right direction.
 
+We trace this to the suppression of **$\textcolor{#34B591}{epistemic\ verbalization}$**, the model's tendency to explicitly reason about its own uncertainty during problem-solving. Because the teacher is conditioned on richer context, it produces confident reasoning that *does not express uncertainty*. As the student imitates this behavior, it progressively loses the ability to express and leverage uncertainty, undermining exploratory reasoning.
+
+📌 **Task Coverage Matters** -- With **$\textcolor{#DA7B99}{narrow\ coverage}$**, suppressing uncertainty shortens responses and boosts in-domain performance. But as coverage broadens, generalization suffers and OOD performance declines, suggesting that epistemic verbalization is important for robust reasoning, especially on unseen and challenging problems.
 
 ## Installation
 
@@ -130,7 +132,16 @@ bash eval_examples.sh
 ```
 
 ## Citation
-If you find this work helpful, please consider citing:
+If you find this work helpful, please consider citing it:
+```bibtex
+@article{kim2026selfdistillation,
+  title={Why Does Self-Distillation (Sometimes) Degrade the Reasoning Capability of LLMs?},
+  author={Kim, Jeonghye and Luo, Xufang and Kim, Minbeom and Lee, Sangmook and Kim, Dohyung and Jeon, Jiwon and Li, Dongsheng and Yang, Yuqing},
+  journal={arXiv preprint arXiv:2603.24472},
+  year={2026},
+  url={https://arxiv.org/abs/2603.24472}
+}
+```
 
 ## Attribution
 Our code is built upon [SDPO](https://github.com/lasgroup/SDPO). We thank the authors of SDPO for their great research and for open-sourcing their codebase!
