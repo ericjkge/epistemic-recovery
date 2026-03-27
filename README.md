@@ -94,7 +94,7 @@ Before running training, you need to set up your environment variables:
 
 1. Copy the sample environment file:
 ```bash
-   cp .env.sample.local .env.local
+   cp ".env sample.local" .env.local
 ```
 2. Open `.env.local` and fill in your configuration values.
 

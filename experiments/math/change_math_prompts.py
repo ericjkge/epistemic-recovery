@@ -28,7 +28,7 @@ df['prompt'] = df['prompt'].apply(transform_prompt)
 # Verify
 for i in range(3):
     print(f"=== Row {i} ===")
-    print(df['prompt'].iloc[i][0]['content'][:300])
+    print(df['prompt'].iloc[i][0]['content'][:1000])
     print()
 
 # Save

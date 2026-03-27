@@ -6,6 +6,8 @@ export TRAIN_FILE=${TRAIN_FILE:-"${VERL_HOME}/train.parquet"}
 export TEST_FILE=${TEST_FILE:-"${VERL_HOME}/test.parquet"}
 export OVERWRITE=${OVERWRITE:-0}
 
+mkdir -p "${VERL_HOME}"
+
 if [ ! -f "${TRAIN_FILE}" ] || [ "${OVERWRITE}" -eq 1 ]; then
   wget -O "${TRAIN_FILE}" "https://huggingface.co/datasets/BytedTsinghua-SIA/DAPO-Math-17k/resolve/main/data/dapo-math-17k.parquet?download=true"
 fi
