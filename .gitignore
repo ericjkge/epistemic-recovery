@@ -137,3 +137,6 @@ DOCKER_PLAN_GH200.md
 
 # Phase 0 log
 !eval/eval_aime24_qwen3_8b.log
+
+# Large eval outputs
+eval/completions/

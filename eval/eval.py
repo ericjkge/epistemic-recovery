@@ -17,6 +17,80 @@ from utils.grader import *
 import pickle
 import pandas as pd
 from math import comb
+from dataclasses import dataclass, field
+from typing import List
+
+
+@dataclass
+class MockOutput:
+    text: str
+
+@dataclass
+class MockCompletion:
+    outputs: List[MockOutput]
+
+
+def generate_with_wait_injection(llm, prompt_batch, sampling_params, wait_injections, wait_string="Wait"):
+    """Budget forcing / wait injection (s1-style).
+
+    Generates each (prompt, sample) independently. For each injection round,
+    generation stops at </think>; the wait_string is appended and generation
+    continues. After all injections, a final unconstrained generation completes
+    the response.
+
+    Returns a list of MockCompletion objects with the same interface as vLLM
+    completions (completion[i].outputs[j].text).
+    """
+    n = sampling_params.n
+
+    if wait_injections == 0:
+        return llm.generate(prompt_batch, sampling_params)
+
+    # Flatten so every (prompt, sample) is an independent sequence
+    flat_prompts = [p for p in prompt_batch for _ in range(n)]
+    accumulated = [""] * len(flat_prompts)
+
+    stop_params = SamplingParams(
+        temperature=sampling_params.temperature,
+        max_tokens=sampling_params.max_tokens,
+        n=1,
+        top_p=sampling_params.top_p,
+        stop=["</think>"],
+        include_stop_str_in_output=False,
+    )
+
+    for injection_idx in range(wait_injections):
+        current_prompts = [flat_prompts[i] + accumulated[i] for i in range(len(flat_prompts))]
+        completions = llm.generate(current_prompts, stop_params)
+        for i in range(len(flat_prompts)):
+            accumulated[i] += completions[i].outputs[0].text + f"{wait_string}\n"
+
+    # One final thinking round after the last Wait, then close the thinking block
+    current_prompts = [flat_prompts[i] + accumulated[i] for i in range(len(flat_prompts))]
+    completions = llm.generate(current_prompts, stop_params)
+    for i in range(len(flat_prompts)):
+        accumulated[i] += completions[i].outputs[0].text + "</think>\n\n"
+
+    final_params = SamplingParams(
+        temperature=sampling_params.temperature,
+        max_tokens=sampling_params.max_tokens,
+        n=1,
+        top_p=sampling_params.top_p,
+    )
+    final_prompts = [flat_prompts[i] + accumulated[i] for i in range(len(flat_prompts))]
+    final_completions = llm.generate(final_prompts, final_params)
+
+    full_texts = [
+        accumulated[i] + final_completions[i].outputs[0].text
+        for i in range(len(flat_prompts))
+    ]
+
+    # Reshape back to (len(prompt_batch), n)
+    results = []
+    for i in range(len(prompt_batch)):
+        outputs = [MockOutput(text=full_texts[i * n + j]) for j in range(n)]
+        results.append(MockCompletion(outputs=outputs))
+    return results
 
 
 def parse_list(arg):
@@ -53,6 +127,10 @@ def parse_args():
     parser.add_argument("--seed", default=0, type=int)
     parser.add_argument("--dtype", default='auto', type=str)
     parser.add_argument("--completions_save_dir", default='./completions', type=str)
+    parser.add_argument("--wait_injections", type=int, default=0,
+                        help="Number of 'Wait' injections for budget forcing (0 = disabled)")
+    parser.add_argument("--wait_string", type=str, default="Wait",
+                        help="String to inject when suppressing end-of-thinking token")
     args = parser.parse_args()
 
     args.top_p = 1 if args.temperature == 0 else args.top_p
@@ -156,7 +234,8 @@ def infer(args):
     model_name = "/".join(args.model_name_or_path.split("/")[-3:])
     data_name_tag = os.path.splitext(os.path.basename(args.data_path))[0]
     thinking_tag = "_think" if args.enable_thinking else "_nothink"
-    out_file_prefix = f'{data_name_tag}_t{args.temperature}{thinking_tag}'
+    wait_tag = f"_wait{args.wait_injections}" if args.wait_injections > 0 else ""
+    out_file_prefix = f'{data_name_tag}_t{args.temperature}{thinking_tag}{wait_tag}'
     out_file = f'avg_outputs/{model_name}/{args.data_name}/{out_file_prefix}_k{args.n_sampling}_s{args.start_idx}_e{args.end_idx}.jsonl'
 
     if os.path.exists(out_file):
@@ -217,7 +296,11 @@ def infer(args):
             f'{out_file_prefix}_k{args.n_sampling}_s{args.start_idx}_e{args.end_idx}_gen_round{cur_generation_epoch}.pkl'
         )
 
-        completions = llm.generate(prompt_batch, sampling_params)
+        completions = generate_with_wait_injection(
+            llm, prompt_batch, sampling_params,
+            wait_injections=args.wait_injections,
+            wait_string=args.wait_string,
+        )
         save_completions(completions, completions_save_file)
 
         for i in range(len(examples)):
@@ -338,6 +421,8 @@ def infer(args):
     print(f"Pass@{args.n_sampling}: {correct_cnt / len(examples):.4f}")
     print(f"Average Response Length (tokens): {avg_response_length:.2f}")
     print(f"Thinking Mode: {'ON' if args.enable_thinking else 'OFF'}")
+    if args.wait_injections > 0:
+        print(f"Wait Injections: {args.wait_injections}x '{args.wait_string}'")
 
     if args.enable_thinking:
         all_thinking_lengths = []
