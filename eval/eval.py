@@ -30,12 +30,13 @@ class MockCompletion:
     outputs: List[MockOutput]
 
 
-def generate_with_wait_injection(llm, prompt_batch, sampling_params, wait_injections, wait_string="Wait"):
+def generate_with_wait_injection(llm, prompt_batch, sampling_params, wait_injections, wait_string="Wait",
+                                 tokenizer=None):
     """Budget forcing / wait injection (s1-style).
 
     Generates each (prompt, sample) independently. For each injection round,
     generation stops at </think>; the wait_string is appended and generation
-    continues. After all injections, a final unconstrained generation completes
+    continues. After all injections, a final 2048 token generation completes
     the response.
 
     Returns a list of MockCompletion objects with the same interface as vLLM
@@ -46,42 +47,76 @@ def generate_with_wait_injection(llm, prompt_batch, sampling_params, wait_inject
     if wait_injections == 0:
         return llm.generate(prompt_batch, sampling_params)
 
-    # Flatten so every (prompt, sample) is an independent sequence
+    if tokenizer is None:
+        raise ValueError("tokenizer is required when wait injections are enabled")
+
+    # Flatten so every (prompt, sample) is an independent sequence.
     flat_prompts = [p for p in prompt_batch for _ in range(n)]
     accumulated = [""] * len(flat_prompts)
+    thinking_token_budget = 36864
+    final_answer_token_budget = 2048
+    remaining_thinking_tokens = [thinking_token_budget] * len(flat_prompts)
+    wait_suffix = f"{wait_string}\n"
+    wait_suffix_tokens = len(tokenizer.encode(wait_suffix, add_special_tokens=False))
 
-    stop_params = SamplingParams(
-        temperature=sampling_params.temperature,
-        max_tokens=sampling_params.max_tokens,
-        n=1,
-        top_p=sampling_params.top_p,
-        stop=["</think>"],
-        include_stop_str_in_output=False,
-    )
+    def generate_active_samples(current_prompts, token_budgets, stop_at_think):
+        active_indices = [i for i, budget in enumerate(token_budgets) if budget > 0]
+        if not active_indices:
+            return {}
+
+        params = []
+        for i in active_indices:
+            params_kwargs = {
+                "temperature": sampling_params.temperature,
+                "max_tokens": token_budgets[i],
+                "n": 1,
+                "top_p": sampling_params.top_p,
+            }
+            if stop_at_think:
+                params_kwargs["stop"] = ["</think>"]
+                params_kwargs["include_stop_str_in_output"] = False
+            params.append(SamplingParams(**params_kwargs))
+
+        completions = llm.generate([current_prompts[i] for i in active_indices], params)
+        return {active_indices[i]: completions[i].outputs[0] for i in range(len(active_indices))}
+
+    generated_outputs = generate_active_samples(flat_prompts, remaining_thinking_tokens, stop_at_think=True)
+    for i, generated_output in generated_outputs.items():
+        accumulated[i] += generated_output.text
+        remaining_thinking_tokens[i] = max(0, remaining_thinking_tokens[i] - len(generated_output.token_ids))
 
     for injection_idx in range(wait_injections):
-        current_prompts = [flat_prompts[i] + accumulated[i] for i in range(len(flat_prompts))]
-        completions = llm.generate(current_prompts, stop_params)
+        round_budgets = [0] * len(flat_prompts)
         for i in range(len(flat_prompts)):
-            accumulated[i] += completions[i].outputs[0].text + f"{wait_string}\n"
+            if remaining_thinking_tokens[i] <= 0:
+                continue
+            if remaining_thinking_tokens[i] <= wait_suffix_tokens:
+                print(
+                    f"Wait round {injection_idx + 1}: stopping extra thinking for "
+                    f"prompt_idx={i // n}, sample_idx={i % n}, "
+                    f"remaining_thinking_tokens={remaining_thinking_tokens[i]}"
+                )
+                remaining_thinking_tokens[i] = 0
+                continue
+            accumulated[i] += wait_suffix
+            remaining_thinking_tokens[i] -= wait_suffix_tokens
+            round_budgets[i] = remaining_thinking_tokens[i]
 
-    # One final thinking round after the last Wait, then close the thinking block
-    current_prompts = [flat_prompts[i] + accumulated[i] for i in range(len(flat_prompts))]
-    completions = llm.generate(current_prompts, stop_params)
+        current_prompts = [flat_prompts[i] + accumulated[i] for i in range(len(flat_prompts))]
+        generated_outputs = generate_active_samples(current_prompts, round_budgets, stop_at_think=True)
+        for i, generated_output in generated_outputs.items():
+            accumulated[i] += generated_output.text
+            remaining_thinking_tokens[i] = max(0, remaining_thinking_tokens[i] - len(generated_output.token_ids))
+
     for i in range(len(flat_prompts)):
-        accumulated[i] += completions[i].outputs[0].text + "</think>\n\n"
+        accumulated[i] += "</think>\n\n"
 
-    final_params = SamplingParams(
-        temperature=sampling_params.temperature,
-        max_tokens=sampling_params.max_tokens,
-        n=1,
-        top_p=sampling_params.top_p,
-    )
     final_prompts = [flat_prompts[i] + accumulated[i] for i in range(len(flat_prompts))]
-    final_completions = llm.generate(final_prompts, final_params)
+    final_answer_budgets = [final_answer_token_budget] * len(flat_prompts)
+    generated_outputs = generate_active_samples(final_prompts, final_answer_budgets, stop_at_think=False)
 
     full_texts = [
-        accumulated[i] + final_completions[i].outputs[0].text
+        accumulated[i] + (generated_outputs[i].text if i in generated_outputs else "")
         for i in range(len(flat_prompts))
     ]
 
@@ -300,6 +335,7 @@ def infer(args):
             llm, prompt_batch, sampling_params,
             wait_injections=args.wait_injections,
             wait_string=args.wait_string,
+            tokenizer=tokenizer,
         )
         save_completions(completions, completions_save_file)
 
