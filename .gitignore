@@ -135,8 +135,5 @@ Dockerfile.gh200-ofi
 DOCKER_PLAN_GH200.md
 .env.local
 
-# Phase 0 log
-!eval/eval_aime24_qwen3_8b.log
-
 # Large eval outputs
 eval/completions/
