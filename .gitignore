@@ -137,3 +137,8 @@ DOCKER_PLAN_GH200.md
 
 # Large eval outputs
 eval/completions/
+# Large model weights
+*.safetensors
+*.bin
+*.gguf
+limo_experiment/models/
