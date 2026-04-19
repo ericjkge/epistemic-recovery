@@ -1,0 +1,12 @@
+{
+  "limo_v2_sdpo": {
+    "file_name": "limo_v2_sdpo.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
+  }
+}

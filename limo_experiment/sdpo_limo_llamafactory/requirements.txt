@@ -1,0 +1,23 @@
+# Requirements for sdpo_limo_llamafactory/
+#
+# LlamaFactory (installed separately via `pip install -e ".[torch,metrics]"`) already
+# covers: torch, transformers, accelerate, peft, datasets, tqdm, numpy, packaging.
+# This file only lists what LlamaFactory does NOT install.
+#
+# Install order:
+#   1. PyTorch (match your CUDA version — H100 uses CUDA 12.x)
+#   2. LlamaFactory  (git clone + pip install -e)
+#   3. flash-attn    (pip install flash-attn --no-build-isolation)
+#   4. pip install -r requirements.txt   ← this file
+#
+# See README / run.sh for full setup steps.
+
+# ── Needed for eval_aime_epistemic.py --load_in_4bit (optional) ──────────────
+bitsandbytes>=0.45.0
+
+# ── Pinned floor versions our scripts rely on (already satisfied by LlamaFactory,
+#    but stated here so `pip check` can catch accidental downgrades) ───────────
+transformers>=4.46.0      # Qwen3 chat template requires 4.46+
+peft>=0.14.0              # PeftModel.from_pretrained API used in eval script
+datasets>=2.14.0          # load_dataset used in make_limo_dataset.py + eval fallback
+huggingface_hub>=0.23.0   # model/dataset downloads

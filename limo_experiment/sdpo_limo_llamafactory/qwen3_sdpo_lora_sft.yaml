@@ -1,0 +1,54 @@
+### LlamaFactory LoRA SFT: beanie00/math-SDPO-Qwen3-8B-think-off-step-100 on LIMOv2
+### Parameters mirror limo_lora_sft.py defaults exactly.
+
+### Model
+model_name_or_path: beanie00/math-SDPO-Qwen3-8B-think-off-step-100
+trust_remote_code: true
+flash_attn: fa2       # fall back to sdpa if flash-attn not installed
+
+### Method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.0
+lora_target: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+
+### Dataset
+# IMPORTANT: set dataset_dir to the absolute path of the sdpo_limo_llamafactory/ directory
+# e.g.  dataset_dir: /path/to/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory
+dataset_dir: REPLACE_WITH_ABSOLUTE_PATH
+dataset: limo_v2_sdpo
+template: qwen3        # use qwen2 if your LlamaFactory version predates qwen3 support
+cutoff_len: 16384        # LIMO-v2 reasoning traces are long; 16k covers ~95% of examples
+overwrite_cache: true
+preprocessing_num_workers: 16   # H100 nodes have many CPU cores; 16 saturates preprocessing
+
+### Output
+output_dir: outputs/sdpo-qwen3-8b-limo-lora-r16
+logging_steps: 5
+save_steps: 200
+plot_loss: true
+overwrite_output_dir: true
+save_total_limit: 2
+
+### Train
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 4
+learning_rate: 5.0e-5
+num_train_epochs: 2.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.05
+weight_decay: 0.01
+bf16: true
+gradient_checkpointing: true
+optim: adamw_torch_fused
+dataloader_num_workers: 4
+ddp_timeout: 180000000
+seed: 42
+
+### Eval
+val_size: 0.05
+per_device_eval_batch_size: 1
+eval_strategy: epoch
