@@ -1,0 +1,46 @@
+{
+  "adapter": {
+    "summary": {
+      "n_problems": 1,
+      "n_correct": 0,
+      "n_with_ground_truth": 1,
+      "accuracy": 0.0,
+      "avg_epistemic_per_1k": 33.66834170854271,
+      "avg_response_length": 1990.0
+    },
+    "results": [
+      {
+        "problem": "Quadratic polynomials $P(x)$ and $Q(x)$ have leading coefficients $2$ and $-2,$ respectively. The graphs of both polynom...",
+        "ground_truth": "116",
+        "predicted": "",
+        "correct": false,
+        "response_length": 1990,
+        "epistemic_count": 67,
+        "epistemic_per_1k": 33.66834170854271,
+        "response_preview": "<think>\n\n</think>\n\nOkay, so I have this problem here about two quadratic polynomials, P(x) and Q(x). Their leading coefficients are 2 and -2 respectively, and both graphs pass through the points (16, 54) and (20, 53). I need to find P(0) + Q(0). Hmm, let me think about how to approach this.\n\nFirst, "
+      }
+    ]
+  },
+  "base": {
+    "summary": {
+      "n_problems": 1,
+      "n_correct": 1,
+      "n_with_ground_truth": 1,
+      "accuracy": 1.0,
+      "avg_epistemic_per_1k": 0.0,
+      "avg_response_length": 472.0
+    },
+    "results": [
+      {
+        "problem": "Quadratic polynomials $P(x)$ and $Q(x)$ have leading coefficients $2$ and $-2,$ respectively. The graphs of both polynom...",
+        "ground_truth": "116",
+        "predicted": "116",
+        "correct": true,
+        "response_length": 472,
+        "epistemic_count": 0,
+        "epistemic_per_1k": 0.0,
+        "response_preview": "<think>\nWe are given two quadratic polynomials $ P(x) $ and $ Q(x) $ with leading coefficients 2 and -2, respectively. Both polynomials pass through the points $ (16, 54) $ and $ (20, 53) $. We are asked to find $ P(0) + Q(0) $.\n\n---\n\n### Step 1: General Form of the Polynomials\n\nSince both are quadr"
+      }
+    ]
+  }
+}

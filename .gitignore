@@ -142,3 +142,11 @@ eval/completions/
 *.bin
 *.gguf
 limo_experiment/models/
+
+# local envs
+.venv/
+**/.venv/
+venv/
+!limo_experiment/sdpo_limo_llamafactory/outputs/
+!limo_experiment/sdpo_limo_llamafactory/outputs/**
+limo_experiment/sdpo_limo_llamafactory/outputs/**/merged/*.safetensors

@@ -117,7 +117,7 @@ def load_model(base_model: str, adapter_path: str | None, load_in_4bit: bool):
         torch_dtype=torch.bfloat16,
         device_map="auto",
         quantization_config=quant_cfg,
-        attn_implementation="flash_attention_2" if not load_in_4bit else None,
+        attn_implementation="sdpa",
         trust_remote_code=True,
     )
 
@@ -192,6 +192,7 @@ def run_eval(tokenizer, model, problems: list[dict], max_new_tokens: int, temper
                 "epistemic_count": ep["count"],
                 "epistemic_per_1k": ep["per_1k_tokens"],
                 "response_preview": response[:300],
+                "response_full": response,
             }
         )
 

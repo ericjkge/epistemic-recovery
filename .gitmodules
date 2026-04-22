@@ -4,3 +4,6 @@
 [submodule "limo_experiment/strategic-information-allocation-llm-reasoning"]
 	path = limo_experiment/strategic-information-allocation-llm-reasoning
 	url = https://github.com/beanie00/strategic-information-allocation-llm-reasoning
+[submodule "limo_experiment/sdpo_limo_llamafactory/LlamaFactory"]
+	path = limo_experiment/sdpo_limo_llamafactory/LlamaFactory
+	url = https://github.com/hiyouga/LLaMA-Factory.git

@@ -4,7 +4,7 @@
 ### Model
 model_name_or_path: beanie00/math-SDPO-Qwen3-8B-think-off-step-100
 trust_remote_code: true
-flash_attn: fa2       # fall back to sdpa if flash-attn not installed
+flash_attn: sdpa       # fall back to sdpa if flash-attn not installed
 
 ### Method
 stage: sft
@@ -18,7 +18,7 @@ lora_target: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
 ### Dataset
 # IMPORTANT: set dataset_dir to the absolute path of the sdpo_limo_llamafactory/ directory
 # e.g.  dataset_dir: /path/to/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory
-dataset_dir: REPLACE_WITH_ABSOLUTE_PATH
+dataset_dir: /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory
 dataset: limo_v2_sdpo
 template: qwen3        # use qwen2 if your LlamaFactory version predates qwen3 support
 cutoff_len: 16384        # LIMO-v2 reasoning traces are long; 16k covers ~95% of examples
@@ -34,8 +34,8 @@ overwrite_output_dir: true
 save_total_limit: 2
 
 ### Train
-per_device_train_batch_size: 2
-gradient_accumulation_steps: 4
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
 learning_rate: 5.0e-5
 num_train_epochs: 2.0
 lr_scheduler_type: cosine
