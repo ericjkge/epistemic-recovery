@@ -1,16 +1,19 @@
-# Requirements for sdpo_limo_llamafactory/
+# Training environment requirements for sdpo_limo_llamafactory/
+#
+# See README.md for full setup instructions, including the separate evaluation
+# environment (.venv-eval) that must be used for evaluate_aime.py + vLLM.
+# DO NOT install vLLM into this environment — it conflicts with transformers here.
 #
 # LlamaFactory (installed separately via `pip install -e ".[torch,metrics]"`) already
 # covers: torch, transformers, accelerate, peft, datasets, tqdm, numpy, packaging.
 # This file only lists what LlamaFactory does NOT install.
 #
 # Install order:
-#   1. PyTorch (match your CUDA version — H100 uses CUDA 12.x)
-#   2. LlamaFactory  (git clone + pip install -e . pip install -r requirements/metrics.txt)
-#   3. flash-attn    (pip install flash-attn --no-build-isolation)
-#   4. pip install -r requirements.txt   ← this file
-#
-# See README / run.sh for full setup steps.
+#   1. python3.11 -m venv .venv-train && source .venv-train/bin/activate
+#   2. pip install torch ... --index-url https://download.pytorch.org/whl/cu121
+#   3. cd LlamaFactory && pip install -e ".[torch,metrics]" && cd ..
+#   4. pip install flash-attn --no-build-isolation
+#   5. pip install -r requirements.txt   ← this file
 
 # ── Needed for eval_aime_epistemic.py --load_in_4bit (optional) ──────────────
 bitsandbytes>=0.45.0

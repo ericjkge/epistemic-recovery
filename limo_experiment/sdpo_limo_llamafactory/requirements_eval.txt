@@ -1,0 +1,24 @@
+# Evaluation environment — minimal deps for vLLM inference
+#
+# Install into a SEPARATE virtual environment from training (see README.md).
+# vLLM pins its own versions of torch and transformers; mixing with the
+# training environment causes import errors.
+#
+# Setup (one-time):
+#   python3.11 -m venv .venv-eval && source .venv-eval/bin/activate
+#   pip install -r requirements_eval.txt
+#
+# Pick ONE vLLM version line below based on your hardware:
+
+# H100 / A100 / GH200 (CUDA 12.x)
+vllm==0.8.4
+
+# Blackwell (B100 / B200 / RTX 50 series) — uncomment and comment line above
+# vllm>=0.12.0
+
+# LoRA adapter loading
+peft>=0.14.0
+
+# AIME benchmark loading + HuggingFace model downloads
+datasets>=2.14.0
+huggingface_hub>=0.23.0
