@@ -6,7 +6,7 @@
 #
 # Install order:
 #   1. PyTorch (match your CUDA version — H100 uses CUDA 12.x)
-#   2. LlamaFactory  (git clone + pip install -e)
+#   2. LlamaFactory  (git clone + pip install -e . pip install -r requirements/metrics.txt)
 #   3. flash-attn    (pip install flash-attn --no-build-isolation)
 #   4. pip install -r requirements.txt   ← this file
 #
