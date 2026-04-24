@@ -162,7 +162,7 @@ Key training hyperparameters (see `qwen3_sdpo_lora_sft.yaml` for the full config
 
 | Parameter | Value |
 |---|---|
-| Base model | `beanie00/math-SDPO-Qwen3-8B-think-off-step-100` |
+| Base model | `beanie00/math-SDPO-Qwen3-8B-think-step-100` |
 | LoRA rank | 16 |
 | LoRA targets | all attention + FFN projections |
 | Sequence length | 16384 tokens |

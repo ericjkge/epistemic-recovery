@@ -18,6 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 try:
@@ -60,12 +61,73 @@ def _normalize_aime_record(rec):
     return q, a
 
 
+# Path to local parquet files: data/ alongside this script.
+_LOCAL_PARQUET_DIR = Path(__file__).parent / "data"
+
+
+def _load_aime_parquet(name: str):
+    """Load from the local parquet in data/math/evaluation/{name}.parquet.
+
+    Both aime24 and aime25 use the same logical schema but different encodings:
+      - aime24: struct columns  (extra_info.raw_problem, reward_model.ground_truth)
+      - aime25: JSON-string columns (need json.loads on extra_info / reward_model)
+
+    Returns a list of {problem_id, question, answer:int} or None if file not found.
+    """
+    parquet_path = (_LOCAL_PARQUET_DIR / f"{name}.parquet").resolve()
+    if not parquet_path.exists():
+        return None
+
+    from datasets import load_dataset
+    ds = load_dataset("parquet", data_files=str(parquet_path), split="train")
+
+    out = []
+    for i, row in enumerate(ds):
+        # --- question ---
+        extra = row.get("extra_info")
+        if isinstance(extra, str):
+            extra = json.loads(extra)
+        question = extra.get("raw_problem") if isinstance(extra, dict) else None
+
+        # Fallback: pull from prompt field (strip instruction suffix added at eval time)
+        if not question:
+            prompt = row.get("prompt")
+            if isinstance(prompt, str):
+                prompt = json.loads(prompt)
+            if isinstance(prompt, list) and prompt:
+                question = prompt[0].get("content", "")
+                question = re.sub(r"\s*Please reason step by step.*$", "", question, flags=re.DOTALL).strip()
+
+        # --- answer ---
+        reward = row.get("reward_model")
+        if isinstance(reward, str):
+            reward = json.loads(reward)
+        answer = reward.get("ground_truth") if isinstance(reward, dict) else None
+
+        if not question or answer is None:
+            continue
+        try:
+            a_int = int(str(answer).strip())
+        except ValueError:
+            continue
+        out.append({"problem_id": f"{name}_{i:03d}", "question": question, "answer": a_int})
+
+    return out or None
+
+
 def load_aime_benchmark(name: str):
     """Return a list of {id, question, answer:int} dicts.
 
-    name in {"aime24", "aime25"}. Tries the spec's preferred HF datasets first and
-    falls back to common alternates, reporting which path succeeded.
+    Tries the local parquet (data/math/evaluation/{name}.parquet) first, then
+    falls back to HuggingFace candidates.
     """
+    # Local parquet — preferred, no network needed.
+    local = _load_aime_parquet(name)
+    if local:
+        print(f"  loaded {name} from local parquet — {len(local)} problems")
+        return local
+    print(f"  local parquet not found for {name}, falling back to HuggingFace...")
+
     from datasets import load_dataset
 
     candidates = {
@@ -225,6 +287,7 @@ def run_one_model(
             gen_kwargs = {}
             if lora_request is not None:
                 gen_kwargs["lora_request"] = lora_request
+            print(f"  submitting {len(prompts)} prompts to vLLM (n={sampling_params.n} each)...")
             completions = model_runner.generate(prompts, sampling_params, **gen_kwargs)
         else:
             completions = []
@@ -232,7 +295,7 @@ def run_one_model(
                 hf_input_device = next(model_runner.parameters()).device
             else:
                 hf_input_device = hf_device
-            for prompt in prompts:
+            for prompt in tqdm(prompts, desc=f"  generating", unit="problem"):
                 encoded = tokenizer(prompt, return_tensors="pt")
                 encoded = {k: v.to(hf_input_device) for k, v in encoded.items()}
                 input_len = encoded["input_ids"].shape[1]
@@ -262,7 +325,7 @@ def run_one_model(
 
         results = []
         n_correct_problems = 0
-        for prob, comp in zip(problems, completions):
+        for prob, comp in tqdm(zip(problems, completions), desc="  grading", total=len(problems), unit="problem"):
             if backend == "vllm":
                 generations = [o.text for o in comp.outputs]
                 response_lengths = [len(o.token_ids) for o in comp.outputs]

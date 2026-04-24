@@ -1,8 +1,8 @@
-### LlamaFactory LoRA SFT: beanie00/math-SDPO-Qwen3-8B-think-off-step-100 on LIMOv2
+### LlamaFactory LoRA SFT: beanie00/math-SDPO-Qwen3-8B-think-step-100 on LIMOv2
 ### Parameters mirror limo_lora_sft.py defaults exactly.
 
 ### Model
-model_name_or_path: beanie00/math-SDPO-Qwen3-8B-think-off-step-100
+model_name_or_path: beanie00/math-SDPO-Qwen3-8B-think-step-100
 trust_remote_code: true
 flash_attn: sdpa       # fall back to sdpa if flash-attn not installed
 
