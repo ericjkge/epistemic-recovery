@@ -9,6 +9,10 @@ Models:
 For each (model, benchmark) we sample n=16 completions per problem with the Kim et al.
 generation settings, extract the LAST \\boxed{...} as the answer, and grade against the
 integer ground truth. Per-problem results are saved to results/{model}_{benchmark}.json.
+
+Run from the sdpo_limo_llamafactory/ parent directory:
+    source .venv-eval/bin/activate
+    python eval/evaluate_aime.py --adapter_path saves/qwen3_sdpo_limo_lora
 """
 import argparse
 import json
@@ -47,6 +51,9 @@ USER_TEMPLATE = "{question}\n\nPlease reason step by step, and put your final an
 
 BOXED_RE = re.compile(r"\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}")
 
+# data/ lives one level up from this script (sdpo_limo_llamafactory/data/)
+_LOCAL_PARQUET_DIR = Path(__file__).parent.parent / "data"
+
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -61,12 +68,8 @@ def _normalize_aime_record(rec):
     return q, a
 
 
-# Path to local parquet files: data/ alongside this script.
-_LOCAL_PARQUET_DIR = Path(__file__).parent / "data"
-
-
 def _load_aime_parquet(name: str):
-    """Load from the local parquet in data/math/evaluation/{name}.parquet.
+    """Load from the local parquet in data/{name}.parquet.
 
     Both aime24 and aime25 use the same logical schema but different encodings:
       - aime24: struct columns  (extra_info.raw_problem, reward_model.ground_truth)
@@ -118,10 +121,8 @@ def _load_aime_parquet(name: str):
 def load_aime_benchmark(name: str):
     """Return a list of {id, question, answer:int} dicts.
 
-    Tries the local parquet (data/math/evaluation/{name}.parquet) first, then
-    falls back to HuggingFace candidates.
+    Tries the local parquet (data/{name}.parquet) first, then falls back to HuggingFace.
     """
-    # Local parquet — preferred, no network needed.
     local = _load_aime_parquet(name)
     if local:
         print(f"  loaded {name} from local parquet — {len(local)} problems")

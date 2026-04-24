@@ -4,6 +4,10 @@
 Counts the Kim et al. 10-token set inside each generation's <think>...</think> span,
 case-insensitive, whole-word only. Produces a CSV summary, a per-token bar chart, and
 a length-vs-accuracy scatter, then prints a one-paragraph qualitative summary.
+
+Run from the sdpo_limo_llamafactory/ parent directory:
+    source .venv-train/bin/activate
+    python eval/analyze_epistemic.py --results_dir results
 """
 import argparse
 import csv

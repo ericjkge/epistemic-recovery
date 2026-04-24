@@ -13,8 +13,8 @@ separate virtual environments and keep them strictly separate.
 
 | venv | Directory | Used for |
 |---|---|---|
-| Training | `.venv-train/` | `prepare_limo.py`, LlamaFactory SFT, `analyze_epistemic.py` |
-| Evaluation | `.venv-eval/` | `evaluate_aime.py` (vLLM backend) |
+| Training | `.venv-train/` | `prepare_limo.py`, LlamaFactory SFT, `eval/analyze_epistemic.py`, `eval/analyze_token_distribution.py` |
+| Evaluation | `.venv-eval/` | `eval/evaluate_aime.py` (vLLM backend) |
 
 Both directories are gitignored. All commands below assume you are in `sdpo_limo_llamafactory/`.
 
@@ -176,7 +176,7 @@ Evaluates three model variants on AIME 2024 and AIME 2025 with n=16 completions 
 
 ```bash
 source .venv-eval/bin/activate
-python evaluate_aime.py \
+python eval/evaluate_aime.py \
   --adapter_path saves/qwen3_sdpo_limo_lora \
   --results_dir results \
   --n_sampling 16 \
@@ -187,25 +187,89 @@ To evaluate only a subset:
 
 ```bash
 # Only run the LoRA model on AIME 2024
-python evaluate_aime.py --models lora --benchmarks aime24
+python eval/evaluate_aime.py --models lora --benchmarks aime24
 
 # Quick smoke test (2 problems, 2 samples)
-python evaluate_aime.py --max_questions 2 --n_sampling 2
+python eval/evaluate_aime.py --max_questions 2 --n_sampling 2
 ```
 
 Results are written to `results/{label}_{benchmark}.json`.
 
 ### Step 4 — Epistemic analysis (training env)
 
+Counts the Kim et al. 10-token set (`wait`, `hmm`, `perhaps`, `maybe`, `actually`,
+`alternatively`, `seems`, `might`, `likely`, `check`) inside each generation's
+`<think>` span. Produces a CSV summary, per-token bar chart, and length-vs-accuracy scatter.
+
 ```bash
 source .venv-train/bin/activate
-python analyze_epistemic.py --results_dir results
+python eval/analyze_epistemic.py --results_dir results
 ```
 
 Outputs:
 - `results/epistemic_summary.csv` — per-model × per-benchmark stats
 - `results/epistemic_comparison.png` — bar chart of epistemic token counts
 - `results/length_vs_accuracy.png` — scatter plot
+
+### Step 5 — Token distribution analysis (training env)
+
+Computes **teacher-forced token-level log probabilities and Shannon entropy** over a dataset.
+This is the deepest signal for whether the LoRA has recovered epistemic verbalization: higher
+log-prob and lower entropy at epistemic token positions post-LoRA means the model assigns more
+decisive probability mass to these verbalizations.
+
+All 10 epistemic tokens (both lowercase and capitalized variants) are tracked by default.
+
+**Option A — analyze gold references from the training set (measures internalization):**
+
+```bash
+source .venv-train/bin/activate
+
+# Pre-LoRA baseline
+python eval/analyze_token_distribution.py \
+  --model_name_or_path beanie00/math-SDPO-Qwen3-8B-think-step-100 \
+  --input_json data/limo_qwen3_thinking.json \
+  --tag pre_lora
+
+# Post-LoRA (merged checkpoint)
+python eval/analyze_token_distribution.py \
+  --model_name_or_path saves/qwen3_sdpo_limo_lora/merged \
+  --input_json data/limo_qwen3_thinking.json \
+  --tag post_lora
+
+# Post-LoRA (base + adapter, no merge needed)
+python eval/analyze_token_distribution.py \
+  --model_name_or_path beanie00/math-SDPO-Qwen3-8B-think-step-100 \
+  --adapter_path saves/qwen3_sdpo_limo_lora \
+  --input_json data/limo_qwen3_thinking.json \
+  --tag post_lora
+```
+
+**Option B — analyze the model's own generated AIME outputs (measures actual behavior):**
+
+```bash
+python eval/analyze_token_distribution.py \
+  --model_name_or_path beanie00/math-SDPO-Qwen3-8B-think-step-100 \
+  --adapter_path saves/qwen3_sdpo_limo_lora \
+  --results_json results/lora_sdpo_plus_limo_aime25.json \
+  --tag post_lora_aime25_generated
+```
+
+All outputs are written to `results/token_dist/{tag}/`:
+
+| File | Contents |
+|---|---|
+| `{tag}_token_stats.csv` | Per-token-type aggregates: count, avg logprob, avg entropy |
+| `{tag}_special_tokens.csv` | Per-occurrence logprob/entropy for each epistemic token |
+| `{tag}_all_logprobs.csv` | Full logprob histogram (overlay pre/post for distribution shift) |
+| `{tag}_all_entropies.csv` | Full entropy histogram |
+| `{tag}_logprob_dist.png` | Histogram + CDF + box plot + summary stats |
+| `{tag}_special_token_dist.png` | Logprob/entropy density curves: all tokens vs. each epistemic token |
+
+**What to look for when comparing pre vs. post LoRA:**
+- `avg_logprob` for epistemic tokens should be **higher** (less negative) post-LoRA
+- `avg_entropy` at epistemic token positions should be **lower** post-LoRA
+- The overall logprob distribution (`_all_logprobs.csv`) should shift right if the model has become more confident on the training distribution
 
 ---
 
