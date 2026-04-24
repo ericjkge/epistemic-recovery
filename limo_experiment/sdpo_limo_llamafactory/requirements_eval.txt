@@ -11,12 +11,20 @@
 # Pick ONE vLLM version line below based on your hardware:
 
 # H100 / A100 / GH200 (CUDA 12.x)
-vllm==0.8.4
+# Note: 0.8.4 has a LoRA/Punica crash (see README troubleshooting); 0.8.5.post1 fixes it.
+vllm==0.8.5.post1
 
 # Blackwell (B100 / B200 / RTX 50 series) — uncomment and comment line above
 # vllm>=0.12.0
 
-# LoRA adapter loading
+# Pin transformers: vLLM 0.8.5.post1's loose bound otherwise resolves to transformers>=5.0,
+# which removed `all_special_tokens_extended` and breaks vLLM's tokenizer init.
+transformers==4.51.3
+
+# tqdm is imported by eval/evaluate_aime.py directly (HF backend path)
+tqdm
+
+# LoRA adapter loading / merging
 peft>=0.14.0
 
 # AIME benchmark loading + HuggingFace model downloads

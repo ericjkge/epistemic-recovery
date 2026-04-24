@@ -243,6 +243,7 @@ def run_one_model(
             gpu_memory_utilization=gpu_memory_utilization,
             max_model_len=max_model_len,
             dtype="bfloat16",
+            enforce_eager=True,
         )
         lora_request = None
         if adapter_path:
@@ -392,13 +393,25 @@ def run_one_model(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--adapter_path", default="saves/qwen3_sdpo_limo_lora")
+    parser.add_argument("--lora_merged_path", default="saves/qwen3_sdpo_limo_lora_merged",
+                        help="If this path exists, the 'lora' model loads it as a plain merged "
+                             "checkpoint instead of base+adapter. Workaround for vLLM LoRA/Punica "
+                             "crashes.")
     parser.add_argument("--results_dir", default="results")
     parser.add_argument("--n_sampling", type=int, default=16)
-    parser.add_argument("--max_tokens", type=int, default=38912)
+    parser.add_argument("--max_tokens", type=int, default=24576,
+                        help="Max new tokens per sample. 24576 covers >99%% of legitimate "
+                             "AIME reasoning traces (Qwen3-8B baseline median ~6K, p95 ~25K). "
+                             "Larger caps just give repetition loops more room to run.")
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top_p", type=float, default=0.95)
     parser.add_argument("--top_k", type=int, default=20)
-    parser.add_argument("--max_model_len", type=int, default=40960,
+    parser.add_argument("--frequency_penalty", type=float, default=0.3,
+                        help="vLLM frequency_penalty. LIMO SFT induces ~25%% degenerate-loop "
+                             "rate in LoRA generations (vs ~6%% baseline); a small frequency "
+                             "penalty discourages repeated tokens without harming legitimate "
+                             "verification behavior.")
+    parser.add_argument("--max_model_len", type=int, default=28672,
                         help="vLLM context window (must be >= prompt + max_tokens).")
     parser.add_argument("--tensor_parallel_size", type=int,
                         default=len(os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")))
@@ -433,6 +446,7 @@ def main():
             top_p=args.top_p,
             top_k=args.top_k,
             max_tokens=args.max_tokens,
+            frequency_penalty=args.frequency_penalty,
         )
     else:
         sampling_params = SimpleNamespace(
@@ -441,6 +455,7 @@ def main():
             top_p=args.top_p,
             top_k=args.top_k,
             max_tokens=args.max_tokens,
+            frequency_penalty=args.frequency_penalty,
         )
 
     results_dir = Path(args.results_dir)
@@ -464,10 +479,18 @@ def main():
         )
 
     if "lora" in requested:
+        lora_merged = Path(args.lora_merged_path)
+        if lora_merged.exists() and (lora_merged / "config.json").exists():
+            lora_model_path = str(lora_merged)
+            lora_adapter_path = None
+            print(f"  loading lora as merged checkpoint: {lora_model_path}")
+        else:
+            lora_model_path = BASE_MODEL
+            lora_adapter_path = args.adapter_path
         run_one_model(
             label="lora_sdpo_plus_limo",
-            model_path=BASE_MODEL,
-            adapter_path=args.adapter_path,
+            model_path=lora_model_path,
+            adapter_path=lora_adapter_path,
             benchmarks=benchmarks,
             sampling_params=sampling_params,
             results_dir=results_dir,

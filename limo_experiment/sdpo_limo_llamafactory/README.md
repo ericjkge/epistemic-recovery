@@ -82,6 +82,35 @@ llamafactory-cli version
 vLLM ships with its own pinned versions of `torch` and `transformers`. Installing it into a
 clean environment avoids all conflicts.
 
+### 0. System prerequisites (fresh server checklist)
+
+Running on a fresh VM often trips on things outside Python. Check these **before** creating
+the venv — in our setup each of these blocked `evaluate_aime.py` until fixed.
+
+```bash
+# Python 3.11 dev headers — Triton compiles a CUDA helper (driver.c) at runtime and needs Python.h.
+# Without this, vLLM crashes with 'subprocess.check_call ... gcc ... returned non-zero exit status 1'.
+sudo apt-get install -y python3.11-dev
+
+# git-lfs — the LoRA adapter weights (saves/qwen3_sdpo_limo_lora/adapter_model.safetensors,
+# ~175 MB) are stored via LFS. Without it, PEFT/vLLM see a pointer file and fail to load the adapter.
+sudo apt-get install -y git-lfs
+git lfs install
+git lfs pull
+
+# .config ownership — on some cloud images /home/$USER/.config is root-owned, which makes
+# vLLM's usage-reporter crash with 'PermissionError: [Errno 13] ... /home/ubuntu/.config/vllm'.
+sudo chown -R "$USER:$USER" "$HOME/.config"
+```
+
+Sanity-check:
+
+```bash
+ls /usr/include/python3.11/Python.h                                   # must exist
+ls saves/qwen3_sdpo_limo_lora/adapter_model.safetensors               # must be ~175 MB (not a 100-byte pointer)
+[ -w "$HOME/.config" ] && echo "config writable"
+```
+
 ### 1. Create and activate
 
 ```bash
@@ -91,17 +120,21 @@ source .venv-eval/bin/activate
 
 ### 2. Install vLLM + evaluation deps
 
-Open `requirements_eval.txt` and uncomment the correct vLLM line for your hardware first:
-- `vllm==0.8.4` — H100 / A100 / GH200
-- `vllm>=0.12.0` — Blackwell (B100 / B200 / RTX 5090)
+`requirements_eval.txt` pins `vllm==0.8.5.post1` for H100 / A100 / GH200 (CUDA 12.x). For
+Blackwell (B100 / B200 / RTX 5090), edit the file to use `vllm>=0.12.0` instead.
 
-Then install:
+> **Why 0.8.5.post1, not 0.8.4?** vLLM 0.8.4 ships a broken `LoRALRUCache` that crashes with
+> `AttributeError: 'LoRALRUCache' object has no attribute '_LRUCache__update'` the moment a
+> LoRA adapter is activated. 0.8.5.post1 fixes it.
 
 ```bash
 pip install -r requirements_eval.txt
 ```
 
-vLLM will pull in compatible versions of `torch` and `transformers` automatically.
+`requirements_eval.txt` also pins `transformers==4.51.3`. vLLM 0.8.5.post1's loose bound
+would otherwise resolve to `transformers>=5.0`, which removed
+`all_special_tokens_extended` and breaks vLLM's tokenizer init with
+`AttributeError: Qwen2Tokenizer has no attribute all_special_tokens_extended`.
 
 ### 3. Verify
 
@@ -172,6 +205,27 @@ Key training hyperparameters (see `qwen3_sdpo_lora_sft.yaml` for the full config
 
 ### Step 3 — Evaluate on AIME (evaluation env)
 
+#### 3a. Merge the LoRA adapter (one-time, required on vLLM 0.8.5.post1)
+
+vLLM 0.8.5.post1's Punica LoRA kernels segfault on H100 + CUDA 12.4 + driver 580 during
+`profile_run` — the engine-core subprocess dies on SIGSEGV right after `Using PunicaWrapperGPU`,
+with no Python traceback. Workaround: pre-merge the adapter into the base weights and load it as
+a plain checkpoint (no Punica path involved at inference time).
+
+```bash
+source .venv-eval/bin/activate
+python eval/merge_lora.py \
+  --adapter "$PWD/saves/qwen3_sdpo_limo_lora" \
+  --out     "$PWD/saves/qwen3_sdpo_limo_lora_merged"
+```
+
+Writes a ~16 GB merged checkpoint. Use absolute paths — PEFT treats relative paths as HF repo
+IDs. `evaluate_aime.py` auto-detects `saves/qwen3_sdpo_limo_lora_merged/` and routes the `lora`
+label to it; if the dir is absent, it falls back to base + adapter (which only works on setups
+where Punica is healthy).
+
+#### 3b. Run the evaluation
+
 Evaluates three model variants on AIME 2024 and AIME 2025 with n=16 completions per problem.
 
 ```bash
@@ -194,6 +248,11 @@ python eval/evaluate_aime.py --max_questions 2 --n_sampling 2
 ```
 
 Results are written to `results/{label}_{benchmark}.json`.
+
+> **Note on `enforce_eager`:** the script passes `enforce_eager=True` to vLLM, which disables
+> CUDA graphs / torch.compile. This sidesteps a class of compile-time failures we hit on H100
+> + CUDA 12.4 at the cost of ~2–3× slower inference. If your server can run vLLM with graphs
+> mode successfully, drop this kwarg in [eval/evaluate_aime.py](eval/evaluate_aime.py) for the speedup.
 
 ### Step 4 — Epistemic analysis (training env)
 
@@ -291,6 +350,36 @@ with the matching `--index-url` if they differ.
 **vLLM OOM on a single GPU**
 : Reduce `--gpu_memory_utilization` (default 0.90) or decrease `--max_model_len` (default
 40960). For multi-GPU, increase `--tensor_parallel_size`.
+
+**`AttributeError: Qwen2Tokenizer has no attribute all_special_tokens_extended`** (vLLM startup)
+: `transformers>=5.0` got installed. Pin it back: `pip install "transformers==4.51.3"`.
+This is captured in `requirements_eval.txt`; re-sync if you upgraded anything recently.
+
+**`AttributeError: 'LoRALRUCache' object has no attribute '_LRUCache__update'`**
+: vLLM 0.8.4 bug in the LoRA cache. Upgrade: `pip install "vllm==0.8.5.post1"`, then re-pin
+transformers as above (the upgrade may pull in a newer one).
+
+**`Command ... gcc ... /tmp/.../main.c ... returned non-zero exit status 1`** during vLLM load
+: Triton is trying to compile its CUDA driver helper and cannot find `Python.h`. Install
+`python3.11-dev` (see the system prerequisites section). No venv rebuild needed — Triton
+recompiles on demand.
+
+**`Engine core initialization failed. See root cause above.`** with no visible error above
+: The engine-core subprocess died on a signal (usually SIGSEGV), which produces no Python
+traceback. Most commonly: vLLM's LoRA/Punica path crashing on H100 + CUDA 12.4 + driver 580.
+Confirm by rerunning with `--models baseline` (no LoRA) — if baseline succeeds and `lora`
+segfaults at `Using PunicaWrapperGPU`, follow Step 3a to merge the adapter and rerun.
+
+**`PermissionError: [Errno 13] ... /home/ubuntu/.config/vllm`**
+: `~/.config` is root-owned on some cloud images. Fix: `sudo chown -R "$USER:$USER" "$HOME/.config"`.
+This is a background-thread warning and won't by itself stop the run, but it often appears alongside
+the real failure and confuses the log.
+
+**`adapter_model.safetensors` missing / `RepositoryNotFoundError` / PEFT treats path as HF repo ID**
+: Two possible causes. (1) Git LFS wasn't set up — the adapter weights are a 175 MB LFS file;
+run `sudo apt-get install -y git-lfs && git lfs install && git lfs pull`. (2) You passed a
+relative path to PEFT; always use absolute paths (`"$PWD/saves/..."`) when calling
+`eval/merge_lora.py` or `PeftModel.from_pretrained`.
 
 **Training stalls / loss stays flat**
 : The effective batch size is 8 (`per_device_train_batch_size=1` ×

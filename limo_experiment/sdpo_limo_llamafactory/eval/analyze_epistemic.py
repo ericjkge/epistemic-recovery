@@ -2,8 +2,20 @@
 """Post-hoc epistemic-token analysis over results/ JSON files from evaluate_aime.py.
 
 Counts the Kim et al. 10-token set inside each generation's <think>...</think> span,
-case-insensitive, whole-word only. Produces a CSV summary, a per-token bar chart, and
-a length-vs-accuracy scatter, then prints a one-paragraph qualitative summary.
+case-insensitive, whole-word only.
+
+Headline metrics:
+  - avg epistemic tokens per response (sum of all 10 tokens' counts, normalized by
+    n_samples) — lower noise than per-token counts
+  - any-correct rate (pass@N): fraction of problems with ≥1 correct sample, read
+    from the JSON's `any_correct_rate` field
+
+Outputs:
+  - results/epistemic_summary.csv                per-(model, benchmark) stats
+  - results/epistemic_per_response.png           bar chart of the headline count
+  - results/accuracy_comparison.png              per-benchmark any-correct bars
+  - results/epistemic_comparison.png             per-token breakdown (diagnostic)
+  - results/length_vs_accuracy.png               scatter (diagnostic)
 
 Run from the sdpo_limo_llamafactory/ parent directory:
     source .venv-train/bin/activate
@@ -32,10 +44,18 @@ THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 
 def extract_thinking_span(text: str):
-    """Return (thinking_text, had_explicit_block: bool)."""
+    """Return (thinking_text, had_explicit_block: bool).
+
+    When a generation has `<think>` but no `</think>` (truncated at max_tokens),
+    treat the whole post-tag remainder as the thinking span — otherwise the analyzer
+    silently falls back to counting over the full response, which inflates LoRA counts
+    relative to closed-block baseline generations.
+    """
     m = THINK_RE.search(text)
     if m:
         return m.group(1), True
+    if "<think>" in text:
+        return text.split("<think>", 1)[1], True
     return text, False
 
 
@@ -71,9 +91,17 @@ def aggregate(results_dir: Path):
         results = payload["results"]
         n_sampling = payload.get("n_sampling", len(results[0]["correctness"]) if results else 1)
 
-        # acc@n: mean over all (problem, sample) pairs
+        # acc@n: mean over all (problem, sample) pairs — estimates pass@1
         flat_correct = [c for r in results for c in r["correctness"]]
         acc = sum(flat_correct) / len(flat_correct) if flat_correct else 0.0
+
+        # any-correct rate = pass@n: fraction of problems with ≥1 correct sample
+        any_correct = payload.get("any_correct_rate")
+        if any_correct is None:
+            any_correct = (
+                sum(1 for r in results if any(r["correctness"])) / len(results)
+                if results else 0.0
+            )
 
         total_resp_tokens = 0
         total_think_chars = 0
@@ -110,10 +138,11 @@ def aggregate(results_dir: Path):
         row = {
             "model": label,
             "benchmark": bench,
-            "acc@16": round(acc, 4),
+            f"acc@{n_sampling}": round(acc, 4),
+            "any_correct_rate": round(any_correct, 4),
             "avg_response_length": round(avg_resp_len, 1),
             "avg_thinking_length": round(avg_think_len, 1),
-            "total_epistemic_tokens_per_response": round(total_epistemic_per_resp, 3),
+            "avg_epistemic_per_response": round(total_epistemic_per_resp, 3),
             "n_samples": n_samples,
             "n_sampling": n_sampling,
         }
@@ -140,8 +169,9 @@ def write_csv(rows, out_csv: Path):
 def print_table(rows):
     if not rows:
         return
-    cols = ["model", "benchmark", "acc@16", "avg_response_length",
-            "avg_thinking_length", "total_epistemic_tokens_per_response"]
+    n_sampling = rows[0].get("n_sampling", 16)
+    cols = ["model", "benchmark", f"acc@{n_sampling}", "any_correct_rate",
+            "avg_response_length", "avg_epistemic_per_response"]
     widths = {c: max(len(c), max(len(str(r[c])) for r in rows)) for c in cols}
     line = "  ".join(c.ljust(widths[c]) for c in cols)
     print("\n" + line)
@@ -187,18 +217,110 @@ def plot_per_token_bars(rows, out_png: Path):
     print(f"Wrote {out_png}")
 
 
+def _panel_bar(ax, labels, values, title, ylabel, ylim=None, value_fmt="{:.3f}"):
+    """One panel: one bar per model label, with values annotated above each bar."""
+    colors = plt.cm.tab10.colors
+    bars = ax.bar(labels, values, color=[colors[i % len(colors)] for i in range(len(labels))])
+    ax.set_title(title)
+    ax.set_ylabel(ylabel)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    ax.grid(axis="y", linestyle=":", alpha=0.5)
+    for bar, v in zip(bars, values):
+        ax.annotate(value_fmt.format(v),
+                    xy=(bar.get_x() + bar.get_width() / 2, v),
+                    xytext=(0, 3), textcoords="offset points",
+                    ha="center", va="bottom", fontsize=9)
+    for label in ax.get_xticklabels():
+        label.set_rotation(20)
+        label.set_ha("right")
+
+
+def plot_any_correct_bars(rows, out_png: Path):
+    """One panel per benchmark: bars of any-correct rate (pass@N) across models."""
+    benches = sorted({r["benchmark"] for r in rows})
+    models_ordered = _ordered_models(rows)
+    if not benches or not models_ordered:
+        return
+
+    fig, axes = plt.subplots(1, len(benches), figsize=(5 * len(benches), 5), sharey=True)
+    if len(benches) == 1:
+        axes = [axes]
+
+    n_sampling = rows[0].get("n_sampling", "N")
+    for ax, bench in zip(axes, benches):
+        bench_rows = {r["model"]: r for r in rows if r["benchmark"] == bench}
+        labels = [m for m in models_ordered if m in bench_rows]
+        values = [bench_rows[m]["any_correct_rate"] for m in labels]
+        _panel_bar(ax, labels, values,
+                   title=bench,
+                   ylabel=f"any-correct rate (pass@{n_sampling})",
+                   ylim=(0, 1.05))
+
+    fig.suptitle(f"Per-problem pass rate across {n_sampling} samples", y=1.02)
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {out_png}")
+
+
+def plot_epistemic_per_response_bars(rows, out_png: Path):
+    """One panel per benchmark: bars of avg epistemic tokens per response."""
+    benches = sorted({r["benchmark"] for r in rows})
+    models_ordered = _ordered_models(rows)
+    if not benches or not models_ordered:
+        return
+
+    fig, axes = plt.subplots(1, len(benches), figsize=(5 * len(benches), 5), sharey=True)
+    if len(benches) == 1:
+        axes = [axes]
+
+    ymax = max(r["avg_epistemic_per_response"] for r in rows) * 1.2
+
+    for ax, bench in zip(axes, benches):
+        bench_rows = {r["model"]: r for r in rows if r["benchmark"] == bench}
+        labels = [m for m in models_ordered if m in bench_rows]
+        values = [bench_rows[m]["avg_epistemic_per_response"] for m in labels]
+        _panel_bar(ax, labels, values,
+                   title=bench,
+                   ylabel="avg epistemic tokens per response",
+                   ylim=(0, ymax),
+                   value_fmt="{:.1f}")
+
+    fig.suptitle("Epistemic verbalization: avg per-response count of the 10-token set", y=1.02)
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {out_png}")
+
+
+def _ordered_models(rows):
+    """Preferred model order (baseline first, lora next, pretrained last if present)."""
+    seen = []
+    for prefer in ("baseline", "lora", "pretrained"):
+        for r in rows:
+            if prefer in r["model"] and r["model"] not in seen:
+                seen.append(r["model"])
+    for r in rows:
+        if r["model"] not in seen:
+            seen.append(r["model"])
+    return seen
+
+
 def plot_length_vs_accuracy(rows, out_png: Path):
     benches = sorted({r["benchmark"] for r in rows})
     fig, ax = plt.subplots(figsize=(6, 5))
     markers = {"aime24": "o", "aime25": "s"}
+    n_sampling = rows[0].get("n_sampling", "N") if rows else "N"
     for r in rows:
-        ax.scatter(r["avg_response_length"], r["acc@16"],
-                   marker=markers.get(r["benchmark"], "^"), s=80, label=f"{r['model']} / {r['benchmark']}")
-        ax.annotate(r["model"], (r["avg_response_length"], r["acc@16"]),
+        ax.scatter(r["avg_response_length"], r["any_correct_rate"],
+                   marker=markers.get(r["benchmark"], "^"), s=80,
+                   label=f"{r['model']} / {r['benchmark']}")
+        ax.annotate(r["model"], (r["avg_response_length"], r["any_correct_rate"]),
                     xytext=(5, 5), textcoords="offset points", fontsize=8)
     ax.set_xlabel("avg response length (tokens)")
-    ax.set_ylabel("acc@16")
-    ax.set_title("Length vs accuracy across models")
+    ax.set_ylabel(f"any-correct rate (pass@{n_sampling})")
+    ax.set_title("Length vs any-correct rate across models")
     ax.grid(linestyle=":", alpha=0.5)
     ax.legend(fontsize=7, loc="best")
     fig.tight_layout()
@@ -208,12 +330,15 @@ def plot_length_vs_accuracy(rows, out_png: Path):
 
 
 def qualitative_summary(rows):
-    """Print a paragraph: did LoRA recover epistemic counts? accuracy? length?"""
+    """Print a paragraph: did LoRA recover epistemic counts? accuracy? length?
+
+    Works with just {baseline, lora}; pretrained is optional and only used to compute
+    a recovery-percentage when present.
+    """
     if not rows:
         print("\n(no rows to summarize)")
         return
 
-    # Find canonical labels — we expect baseline / lora / pretrained.
     by_model = defaultdict(list)
     for r in rows:
         by_model[r["model"]].append(r)
@@ -228,21 +353,29 @@ def qualitative_summary(rows):
     lora_label = next((m for m in by_model if "lora" in m), None)
     pretrained_label = next((m for m in by_model if "pretrained" in m), None)
 
-    if not (baseline_label and lora_label and pretrained_label):
-        print("\nQualitative summary skipped: need baseline / lora / pretrained rows.")
+    if not (baseline_label and lora_label):
+        print("\nQualitative summary skipped: need baseline and lora rows.")
         return
 
-    base_ep = avg(baseline_label, "total_epistemic_tokens_per_response")
-    lora_ep = avg(lora_label, "total_epistemic_tokens_per_response")
-    pre_ep = avg(pretrained_label, "total_epistemic_tokens_per_response")
-    base_acc = avg(baseline_label, "acc@16")
-    lora_acc = avg(lora_label, "acc@16")
-    pre_acc = avg(pretrained_label, "acc@16")
+    n_sampling = rows[0].get("n_sampling", "N")
+    acc_key = f"acc@{n_sampling}"
+
+    base_ep = avg(baseline_label, "avg_epistemic_per_response")
+    lora_ep = avg(lora_label, "avg_epistemic_per_response")
+    pre_ep = avg(pretrained_label, "avg_epistemic_per_response") if pretrained_label else None
+    base_acc = avg(baseline_label, acc_key)
+    lora_acc = avg(lora_label, acc_key)
+    pre_acc = avg(pretrained_label, acc_key) if pretrained_label else None
+    base_any = avg(baseline_label, "any_correct_rate")
+    lora_any = avg(lora_label, "any_correct_rate")
+    pre_any = avg(pretrained_label, "any_correct_rate") if pretrained_label else None
     base_len = avg(baseline_label, "avg_response_length")
     lora_len = avg(lora_label, "avg_response_length")
-    pre_len = avg(pretrained_label, "avg_response_length")
+    pre_len = avg(pretrained_label, "avg_response_length") if pretrained_label else None
 
     def pct_recovered(base, lora, pre):
+        if base is None or lora is None or pre is None:
+            return None
         denom = pre - base
         if abs(denom) < 1e-9:
             return None
@@ -250,31 +383,36 @@ def qualitative_summary(rows):
 
     ep_recov = pct_recovered(base_ep, lora_ep, pre_ep)
     acc_recov = pct_recovered(base_acc, lora_acc, pre_acc)
+    any_recov = pct_recovered(base_any, lora_any, pre_any)
+
+    def fmt_line(label, base, lora, pre, width=22, precision=3):
+        line = f"  {label.ljust(width)} base={base:.{precision}f}   lora={lora:.{precision}f}"
+        if pre is not None:
+            line += f"   pretrained={pre:.{precision}f}"
+        return line
 
     print("\n" + "=" * 70)
     print("QUALITATIVE SUMMARY")
     print("=" * 70)
-    print(
-        f"Epistemic tokens / response (mean across benchmarks):\n"
-        f"  baseline (SDPO):       {base_ep:.2f}\n"
-        f"  + LoRA on LIMO:        {lora_ep:.2f}\n"
-        f"  pretrained Qwen3-8B:   {pre_ep:.2f}"
-        + (f"\n  → LoRA recovers {ep_recov:.0f}% of the SDPO suppression toward pretrained." if ep_recov is not None else "")
-    )
-    print(
-        f"\nAcc@16 (mean across benchmarks):\n"
-        f"  baseline (SDPO):       {base_acc:.3f}\n"
-        f"  + LoRA on LIMO:        {lora_acc:.3f}\n"
-        f"  pretrained Qwen3-8B:   {pre_acc:.3f}"
-        + (f"\n  → LoRA recovers {acc_recov:.0f}% of the accuracy gap toward pretrained." if acc_recov is not None else "")
-    )
-    print(
-        f"\nAvg response length (tokens):\n"
-        f"  baseline (SDPO):       {base_len:.0f}\n"
-        f"  + LoRA on LIMO:        {lora_len:.0f}\n"
-        f"  pretrained Qwen3-8B:   {pre_len:.0f}"
-    )
-    if lora_len is not None and pre_len is not None:
+    print("Headline metric — avg epistemic tokens per response:")
+    print(fmt_line("per response:", base_ep, lora_ep, pre_ep, precision=2))
+    if ep_recov is not None:
+        print(f"  → LoRA recovers {ep_recov:.0f}% of the SDPO suppression toward pretrained.")
+    else:
+        delta_pct = (lora_ep - base_ep) / base_ep * 100 if base_ep else 0
+        print(f"  → LoRA {'+' if delta_pct >= 0 else ''}{delta_pct:.0f}% vs baseline.")
+
+    print("\nAccuracy:")
+    print(fmt_line(f"{acc_key} (≈ pass@1):", base_acc, lora_acc, pre_acc))
+    print(fmt_line(f"any-correct (pass@{n_sampling}):", base_any, lora_any, pre_any))
+    if acc_recov is not None:
+        print(f"  → LoRA recovers {acc_recov:.0f}% of the {acc_key} gap toward pretrained.")
+    if any_recov is not None:
+        print(f"  → LoRA recovers {any_recov:.0f}% of the any-correct gap toward pretrained.")
+
+    print("\nAvg response length (tokens):")
+    print(fmt_line("length:", base_len, lora_len, pre_len, precision=0))
+    if pre_len is not None:
         if lora_len < pre_len:
             print(f"  → LoRA stays {pre_len - lora_len:.0f} tokens shorter than pretrained — "
                   f"best-of-both-worlds outcome holds.")
@@ -289,6 +427,12 @@ def main():
     parser.add_argument("--csv_out", default="results/epistemic_summary.csv")
     parser.add_argument("--bars_out", default="results/epistemic_comparison.png")
     parser.add_argument("--scatter_out", default="results/length_vs_accuracy.png")
+    parser.add_argument("--epistemic_bars_out",
+                        default="results/epistemic_per_response.png",
+                        help="Headline bar chart: avg epistemic tokens per response, per benchmark.")
+    parser.add_argument("--accuracy_bars_out",
+                        default="results/accuracy_comparison.png",
+                        help="Bar chart of any-correct rate (pass@N) per benchmark.")
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
@@ -296,12 +440,14 @@ def main():
 
     print_table(rows)
     write_csv(rows, Path(args.csv_out))
+    plot_epistemic_per_response_bars(rows, Path(args.epistemic_bars_out))
+    plot_any_correct_bars(rows, Path(args.accuracy_bars_out))
     plot_per_token_bars(rows, Path(args.bars_out))
     plot_length_vs_accuracy(rows, Path(args.scatter_out))
 
     if no_think_warnings:
-        print("\nWARNING: generations without an explicit <think>...</think> block "
-              "(counted across whole response):")
+        print("\nNote: generations without an explicit </think> closing tag "
+              "(usually truncated at max_tokens — counted over full post-<think> span):")
         for label, bench, n, total in no_think_warnings:
             print(f"  {label} / {bench}: {n}/{total} samples")
 
