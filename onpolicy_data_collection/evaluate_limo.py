@@ -2,8 +2,7 @@
 """Evaluate Kim et al. SDPO Qwen3 on GAIR/LIMO-v2 with vLLM.
 
 This is intentionally self-contained research code. It mirrors the JSONL output
-shape used by eval/eval.py and includes a local copy of its s1-style wait
-injection helper.
+shape used by eval/eval.py.
 """
 from __future__ import annotations
 
@@ -12,10 +11,9 @@ import json
 import multiprocessing
 import os
 import re
-from dataclasses import dataclass
 from math import isclose
 from pathlib import Path
-from typing import Any, List
+from typing import Any
 
 from datasets import load_dataset
 from tqdm import tqdm
@@ -38,6 +36,7 @@ except Exception:  # pragma: no cover - keeps extraction usable if optional grad
 BASE_MODEL = "beanie00/math-SDPO-Qwen3-8B-think-step-100"
 BENCHMARK = "limov2"
 DATA_SOURCE = "GAIR/LIMO-v2"
+DEFAULT_RESULTS_DIR = Path(__file__).resolve().parent / "results"
 USER_TEMPLATE = "{question}\n\nPlease reason step by step, and put your final answer within \\boxed{{}}."
 
 # TODO: Replace the hard-coded placeholder with actual few-shot solutions.
@@ -50,129 +49,15 @@ Now solve the next problem."""
 THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 
-@dataclass
-class MockOutput:
-    text: str
-
-
-@dataclass
-class MockCompletion:
-    outputs: List[MockOutput]
-
-
-def generate_with_wait_injection(
-    llm,
-    prompt_batch,
-    sampling_params,
-    wait_injections,
-    wait_string="Wait",
-    tokenizer=None,
-):
-    """Budget forcing / wait injection (s1-style).
-
-    Generates each (prompt, sample) independently. For each injection round,
-    generation stops at </think>; the wait_string is appended and generation
-    continues. After all injections, a final 2048 token generation completes
-    the response.
-
-    Returns a list of MockCompletion objects with the same interface as vLLM
-    completions (completion[i].outputs[j].text).
-    """
-    n = sampling_params.n
-
-    if wait_injections == 0:
-        return llm.generate(prompt_batch, sampling_params)
-
-    if tokenizer is None:
-        raise ValueError("tokenizer is required when wait injections are enabled")
-
-    # Flatten so every (prompt, sample) is an independent sequence.
-    flat_prompts = [p for p in prompt_batch for _ in range(n)]
-    accumulated = [""] * len(flat_prompts)
-    thinking_token_budget = 36864
-    final_answer_token_budget = 2048
-    remaining_thinking_tokens = [thinking_token_budget] * len(flat_prompts)
-    wait_suffix = f"{wait_string}\n"
-    wait_suffix_tokens = len(tokenizer.encode(wait_suffix, add_special_tokens=False))
-
-    def generate_active_samples(current_prompts, token_budgets, stop_at_think):
-        active_indices = [i for i, budget in enumerate(token_budgets) if budget > 0]
-        if not active_indices:
-            return {}
-
-        params = []
-        for i in active_indices:
-            params_kwargs = {
-                "temperature": sampling_params.temperature,
-                "max_tokens": token_budgets[i],
-                "n": 1,
-                "top_p": sampling_params.top_p,
-            }
-            if stop_at_think:
-                params_kwargs["stop"] = ["</think>"]
-                params_kwargs["include_stop_str_in_output"] = False
-            params.append(SamplingParams(**params_kwargs))
-
-        completions = llm.generate([current_prompts[i] for i in active_indices], params)
-        return {active_indices[i]: completions[i].outputs[0] for i in range(len(active_indices))}
-
-    generated_outputs = generate_active_samples(flat_prompts, remaining_thinking_tokens, stop_at_think=True)
-    for i, generated_output in generated_outputs.items():
-        accumulated[i] += generated_output.text
-        remaining_thinking_tokens[i] = max(0, remaining_thinking_tokens[i] - len(generated_output.token_ids))
-
-    for injection_idx in range(wait_injections):
-        round_budgets = [0] * len(flat_prompts)
-        for i in range(len(flat_prompts)):
-            if remaining_thinking_tokens[i] <= 0:
-                continue
-            if remaining_thinking_tokens[i] <= wait_suffix_tokens:
-                print(
-                    f"Wait round {injection_idx + 1}: stopping extra thinking for "
-                    f"prompt_idx={i // n}, sample_idx={i % n}, "
-                    f"remaining_thinking_tokens={remaining_thinking_tokens[i]}"
-                )
-                remaining_thinking_tokens[i] = 0
-                continue
-            accumulated[i] += wait_suffix
-            remaining_thinking_tokens[i] -= wait_suffix_tokens
-            round_budgets[i] = remaining_thinking_tokens[i]
-
-        current_prompts = [flat_prompts[i] + accumulated[i] for i in range(len(flat_prompts))]
-        generated_outputs = generate_active_samples(current_prompts, round_budgets, stop_at_think=True)
-        for i, generated_output in generated_outputs.items():
-            accumulated[i] += generated_output.text
-            remaining_thinking_tokens[i] = max(0, remaining_thinking_tokens[i] - len(generated_output.token_ids))
-
-    for i in range(len(flat_prompts)):
-        accumulated[i] += "</think>\n\n"
-
-    final_prompts = [flat_prompts[i] + accumulated[i] for i in range(len(flat_prompts))]
-    final_answer_budgets = [final_answer_token_budget] * len(flat_prompts)
-    generated_outputs = generate_active_samples(final_prompts, final_answer_budgets, stop_at_think=False)
-
-    full_texts = [
-        accumulated[i] + (generated_outputs[i].text if i in generated_outputs else "")
-        for i in range(len(flat_prompts))
-    ]
-
-    # Reshape back to (len(prompt_batch), n)
-    results = []
-    for i in range(len(prompt_batch)):
-        outputs = [MockOutput(text=full_texts[i * n + j]) for j in range(n)]
-        results.append(MockCompletion(outputs=outputs))
-    return results
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate GAIR/LIMO-v2 with vLLM.")
     parser.add_argument("--model_name_or_path", default=BASE_MODEL)
-    parser.add_argument("--results_dir", default="results")
+    parser.add_argument("--results_dir", default=DEFAULT_RESULTS_DIR)
     parser.add_argument("--n_sampling", type=int, default=4)
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top_p", type=float, default=0.95)
     parser.add_argument("--top_k", type=int, default=20)
-    parser.add_argument("--max_tokens", type=int, default=38912) # No. of tokens allowed for response (ignored in wait-injection)
+    parser.add_argument("--max_tokens", type=int, default=38912) # No. of tokens allowed for response
     parser.add_argument("--max_model_len", type=int, default=40960) # No. of tokens allowed for context window
     parser.add_argument(
         "--tensor_parallel_size",
@@ -181,10 +66,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.90)
     parser.add_argument("--max_questions", type=int, default=0)
-    parser.add_argument("--modes", default="baseline,fewshot,wait")
+    parser.add_argument("--modes", default="baseline,fewshot")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--wait_injections", type=int, default=1)
-    parser.add_argument("--wait_string", default="Wait")
     parser.add_argument("--disable_thinking", action="store_true")
     return parser.parse_args()
 
@@ -390,7 +273,7 @@ def call_with_timeout(func, *args, timeout: int = 3) -> bool:
 
 
 def math_equal(prediction: Any, reference: Any, timeout: bool = True, depth: int = 0) -> bool:
-    """Local copy of the general grader's exact/numeric/symbolic equality pattern."""
+    """Local copy of eval/utils/grader.py's exact/numeric/symbolic equality pattern."""
     if depth > 5 or prediction is None or reference is None:
         return False
 
@@ -479,17 +362,7 @@ def run_mode(
     prompts = build_prompts(tokenizer, problems, mode, enable_thinking=not args.disable_thinking)
     print(f"[{mode}] submitting {len(prompts)} prompts to vLLM (n={sampling_params.n})...")
 
-    if mode == "wait":
-        completions = generate_with_wait_injection(
-            llm,
-            prompts,
-            sampling_params,
-            wait_injections=args.wait_injections,
-            wait_string=args.wait_string,
-            tokenizer=tokenizer,
-        )
-    else:
-        completions = llm.generate(prompts, sampling_params)
+    completions = llm.generate(prompts, sampling_params)
 
     records = []
     correct_cnt = 0
@@ -592,7 +465,7 @@ def main() -> None:
     )
 
     requested_modes = [mode.strip() for mode in args.modes.split(",") if mode.strip()]
-    allowed_modes = {"baseline", "fewshot", "wait"}
+    allowed_modes = {"baseline", "fewshot"}
     unknown_modes = sorted(set(requested_modes) - allowed_modes)
     if unknown_modes:
         raise ValueError(f"Unknown modes: {unknown_modes}. Expected one or more of {sorted(allowed_modes)}")
