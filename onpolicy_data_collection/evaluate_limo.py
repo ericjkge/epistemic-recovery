@@ -40,11 +40,52 @@ DEFAULT_RESULTS_DIR = Path(__file__).resolve().parent / "results"
 USER_TEMPLATE = "{question}\n\nPlease reason step by step, and put your final answer within \\boxed{{}}."
 
 # TODO: Replace the hard-coded placeholder with actual few-shot solutions.
-FEWSHOT_PREFIX = """Below are examples of a solution. In this way, you can express uncertainty by using phrases such as "hmm" or "wait."
+FEWSHOT_PREFIX = """Below are two examples of reasoning traces. You can follow their style to express uncertainty during reasoning using phrases like “wait” or “hmm.” The examples are truncated in the middle for brevity, but your solution should be complete.
 
-[HARD-CODED SECTION TO BE ADDED]
+======
 
-Now solve the next problem."""
+[Example 1]
+
+Question: Given \( m = n^{4} + x \), where \( n \) is a natural number and \( x \) is a two-digit positive integer, what value of \( x \) will make \( m \) a composite number?
+
+Solution: <think> Okay, so I need to figure out what value of x (which is a two-digit number) will make m = n⁴ + x a composite number, where n is a natural number. Hmm, let's break this down step by step.
+
+First, let me recall that a composite number is a positive integer that has at least one positive divisor other than 1 and itself. So, m has to be divisible by some number other than 1 and m. My goal is to find an x such that no matter what natural number n we choose, m will always be composite? Wait, actually, the problem says "what value of x will make m a composite number." Hmm, maybe I need to interpret it as for any n, m is composite? Or is there a specific n? Wait, the problem says "where n is a natural number and x is a two-digit positive integer." Maybe it's asking for an x such that for any natural number n, m is composite? Or maybe just that there exists some n where m is composite? The wording is a bit ambiguous.
+
+Wait, let me check the problem again: "Given m = n⁴ + x, where n is a natural number and x is a two-digit positive integer, what value of x will make m a composite number?" Hmm, maybe it's asking for an x such that for all natural numbers n, m is composite? That would make sense, but the problem might not specify "for all n," so maybe it's asking for an x such that there exists some n where m is composite. But since x is fixed and n can be any natural number, perhaps the question is to find an x such that for every n, m is composite. Otherwise, if it's just for some n, then any x would work because you can choose n such that m is composite. For example, if x is 10, then pick n=2: 16 + 10 =26, which is composite. But maybe the question wants an x such that no matter what n you choose, m is composite. That's a more challenging problem.
+
+Given that x is a two-digit number, the problem might be looking for an x such that n⁴ + x is always composite, regardless of n. That seems more likely. Let me confirm. The problem says "what value of x will make m a composite number"—so perhaps for any n, m must be composite. So, the x has to be such that adding it to any fourth power of a natural number results in a composite number. That would be the case. Let me think how to approach this.
+
+First, note that n⁴ is a perfect fourth power. For n ≥ 1, n⁴ is 1, 16, 81, 256, 625, etc. Adding x (a two-digit number between 10 and 99 inclusive) to these numbers must result in a composite number. So, the challenge is to choose x such that for every n, n⁴ + x is composite.
+
+Alternatively, maybe the question is asking for an x such that there exists some n where m is composite. But since x is two-digit, and m = n⁴ + x, unless n is very small, m will be large, so it's likely composite. But the problem might want a specific x that works for all n. Let me see.
+
+Wait, the problem is a bit ambiguous. Since the user is probably expecting a specific answer, maybe from an Olympiad problem, perhaps there is a standard answer here. Let me think of possible x's. Maybe x is 6? But x has to be two-digit. Wait, two-digit, so between 10 and 99. Hmm. .....
+
+======
+
+[Example 2]
+
+Question: In triangle \( ABC \), side \( AC \) is the largest. Points \( M \) and \( N \) on side \( AC \) are such that \( AM = AB \) and \( CN = CB \). It is known that angle \( \angle NBM \) is three times smaller than angle \( \angle ABC \). Find \( \angle ABC \).
+
+Solution: <think> Okay, so I have this geometry problem here. Let me try to parse it step by step. The problem says:
+
+In triangle ABC, side AC is the largest. Points M and N on side AC are such that AM = AB and CN = CB. It is known that angle ∠NBM is three times smaller than angle ∠ABC. Find ∠ABC.
+
+Hmm, first, let me draw a rough sketch of triangle ABC. Since AC is the largest side, that means the angle opposite to AC, which is angle B, should be the largest angle in the triangle. Wait, actually, in a triangle, the largest side is opposite the largest angle. So if AC is the largest side, then angle B is the largest angle. That might be useful later.
+
+Now, points M and N are on side AC. Let me note that. So AC is the base here, and M and N are somewhere along that base. The problem states that AM = AB and CN = CB. So starting from point A, moving along AC, we mark point M such that the length from A to M is equal to the length of AB. Similarly, starting from point C, moving towards A along AC, we mark point N such that the length from C to N is equal to CB.
+
+Also, angle ∠NBM is three times smaller than angle ∠ABC. So ∠NBM = (1/3)∠ABC. The question is to find the measure of angle ABC.
+
+Hmm, okay. Let me try to label all this on my mental diagram. Let me think of triangle ABC with AC as the base. Let me denote AB as c, BC as a, and AC as b. Wait, but since AC is the largest side, so b > a and b > c.
+
+Wait, actually, standard notation is usually: in triangle ABC, side a is BC, side b is AC, and side c is AB. Wait, maybe that's conflicting here. Let me confirm: in standard triangle notation, side a is opposite angle A, side b opposite angle B, and side c opposite angle C. Wait, so if AC is the largest side, then AC is side b, which is opposite angle B. Wait, that would mean angle B is opposite the largest side, so angle B is indeed the largest angle. So that's consistent.
+
+But perhaps to avoid confusion, let me just assign variables differently. Let me denote the sides as follows: Let AB = x, BC = y, and AC = z. Since AC is the largest, z > x and z > y. .....
+
+======
+"""
 
 THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
@@ -66,19 +107,27 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.90)
     parser.add_argument("--max_questions", type=int, default=0)
+    parser.add_argument("--start_index", type=int, default=0)
     parser.add_argument("--modes", default="baseline,fewshot")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--disable_thinking", action="store_true")
     return parser.parse_args()
 
 
-def load_limov2(max_questions: int = 0) -> list[dict[str, Any]]:
+def load_limov2(max_questions: int = 0, start_index: int = 0) -> list[dict[str, Any]]:
     ds = load_dataset(DATA_SOURCE, split="train")
+    if start_index < 0:
+        raise ValueError("--start_index must be non-negative")
+    start_index = min(start_index, len(ds))
     if max_questions and max_questions > 0:
-        ds = ds.select(range(min(max_questions, len(ds))))
+        end_index = min(start_index + max_questions, len(ds))
+        ds = ds.select(range(start_index, end_index))
+    elif start_index:
+        ds = ds.select(range(start_index, len(ds)))
 
     problems = []
-    for i, row in enumerate(ds):
+    for offset, row in enumerate(ds):
+        i = start_index + offset
         question = row.get("question")
         answer = row.get("answer")
         if question is None or answer is None:
@@ -441,7 +490,7 @@ def run_mode(
 
 def main() -> None:
     args = parse_args()
-    problems = load_limov2(args.max_questions)
+    problems = load_limov2(args.max_questions, args.start_index)
     if not problems:
         raise RuntimeError("No LIMO-v2 problems loaded.")
     print(f"Loaded {len(problems)} problems from {DATA_SOURCE}")
