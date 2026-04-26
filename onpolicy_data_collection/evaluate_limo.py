@@ -40,7 +40,7 @@ DEFAULT_RESULTS_DIR = Path(__file__).resolve().parent / "results"
 USER_TEMPLATE = "{question}\n\nPlease reason step by step, and put your final answer within \\boxed{{}}."
 
 # TODO: Replace the hard-coded placeholder with actual few-shot solutions.
-FEWSHOT_PREFIX = """Below are two examples of reasoning traces. You can follow their style to express uncertainty during reasoning using phrases like “wait” or “hmm.” The examples are truncated in the middle for brevity, but your solution should be complete.
+FEWSHOT_PREFIX = """Below are two examples of reasoning traces. You should follow their style to express uncertainty during reasoning using phrases like “wait” or “hmm.” The examples are truncated for brevity, but you should extensively check, backtrack, and re-analyze as necessary to ensure the reasoning process is sound.
 
 ======
 
