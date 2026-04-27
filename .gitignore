@@ -150,6 +150,10 @@ venv/
 !limo_experiment/sdpo_limo_llamafactory/outputs/
 !limo_experiment/sdpo_limo_llamafactory/outputs/**
 limo_experiment/sdpo_limo_llamafactory/outputs/**/merged/*.safetensors
+# Intermediate training checkpoints (only the final adapter at the run root is needed for eval)
+limo_experiment/sdpo_limo_llamafactory/outputs/**/checkpoint-*/
+# Per-run state file written by train.sh
+limo_experiment/sdpo_limo_llamafactory/.last_run_id
 
 # Eval venv and locally-generated merged model (regenerated via eval/merge_lora.py)
 limo_experiment/sdpo_limo_llamafactory/.venv-eval/
