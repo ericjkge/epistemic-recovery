@@ -18,6 +18,16 @@
 # ── Needed for eval_aime_epistemic.py --load_in_4bit (optional) ──────────────
 bitsandbytes>=0.45.0
 
+# ── Epistemic alignment probing ───────────────────────────────────────────────
+# probe_during_training.py, evaluate_epistemic_alignment.py
+matplotlib>=3.7.0         # figures in analyze_epistemic.py + evaluate_epistemic_alignment.py
+scipy>=1.11.0             # KDE in evaluate_epistemic_alignment.py; falls back to histogram without it
+
+# wandb is OPTIONAL. probe_during_training.py skips wandb logging gracefully if
+# it is not installed. Install it only if you want per-checkpoint metric curves:
+#   pip install wandb && wandb login
+wandb>=0.17.0
+
 # ── Pinned floor versions our scripts rely on (already satisfied by LlamaFactory,
 #    but stated here so `pip check` can catch accidental downgrades) ───────────
 transformers>=4.46.0      # Qwen3 chat template requires 4.46+

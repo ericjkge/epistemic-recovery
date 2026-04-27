@@ -13,8 +13,8 @@ separate virtual environments and keep them strictly separate.
 
 | venv | Directory | Used for |
 |---|---|---|
-| Training | `.venv-train/` | `prepare_limo.py`, LlamaFactory SFT, `eval/analyze_epistemic.py`, `eval/analyze_token_distribution.py` |
-| Evaluation | `.venv-eval/` | `eval/evaluate_aime.py` (vLLM backend) |
+| Training | `.venv-train/` | `train.sh`, LlamaFactory SFT, `eval/probe_during_training.py`, `eval/evaluate_epistemic_alignment.py`, `eval/analyze_epistemic.py` |
+| Evaluation | `.venv-eval/` | `eval.sh`, `eval/evaluate_aime.py` (vLLM backend) |
 
 Both directories are gitignored. All commands below assume you are in `sdpo_limo_llamafactory/`.
 
@@ -68,11 +68,20 @@ PyTorch CUDA version from step 2 matches the system CUDA toolkit (`nvidia-smi`).
 pip install -r requirements.txt
 ```
 
+This installs `matplotlib`, `scipy`, and `wandb` in addition to the pinned floor versions.
+**wandb is optional** — `probe_during_training.py` skips wandb logging silently if it is not
+installed. If you want per-checkpoint metric curves in the wandb dashboard, log in after installing:
+
+```bash
+wandb login        # paste your API key from wandb.ai/authorize
+```
+
 ### 6. Verify
 
 ```bash
-python -c "import transformers, peft, datasets; print('OK')"
+python -c "import transformers, peft, datasets, matplotlib, scipy; print('OK')"
 llamafactory-cli version
+wandb verify       # optional — confirms your API key is valid
 ```
 
 ---
@@ -147,49 +156,35 @@ python -c "from peft import PeftModel; print('peft OK')"
 
 ## Pipeline
 
-### Step 1 — Prepare LIMO data (training env)
+The pipeline is split into two scripts so training and evaluation can be run independently,
+and the epistemic probe monitor can run alongside training.
 
-Converts [GAIR/LIMO](https://huggingface.co/datasets/GAIR/LIMO) into Qwen3 thinking-mode
-format by wrapping the reasoning trace in `<think>...</think>`.
-
-```bash
-source .venv-train/bin/activate
-python prepare_limo.py \
-  --dataset GAIR/LIMO \
-  --output data/limo_qwen3_thinking.json \
-  --tokenizer_name Qwen/Qwen3-8B
-```
-
-`data/limo_qwen3_thinking.json` is already committed to the repo — skip this step if it exists.
-
-### Step 2 — LoRA SFT via LlamaFactory (training env)
-
-Before running, update `dataset_dir` in `qwen3_sdpo_lora_sft.yaml` to the absolute path of
-this directory on your machine:
-
-```yaml
-dataset_dir: /absolute/path/to/sdpo_limo_llamafactory
-```
-
-Then launch training:
+### train.sh — data prep + LoRA SFT + merge (training env)
 
 ```bash
 source .venv-train/bin/activate
-llamafactory-cli train qwen3_sdpo_lora_sft.yaml
+./train.sh
 ```
 
-For multi-GPU:
+Key env vars (all optional — defaults match the YAML):
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 llamafactory-cli train qwen3_sdpo_lora_sft.yaml
+RUN_ID=myrun          # stable identifier; auto-generated as timestamp if omitted
+N_EPOCHS=2            # training epochs
+LORA_RANK=16          # LoRA rank
+LR=5e-5               # learning rate
+WANDB_PROJECT=myproj  # omit to disable wandb logging
+SKIP_PROBE=1          # set to skip the epistemic probe monitor entirely
 ```
 
-Checkpoints are saved to `outputs/sdpo-qwen3-8b-limo-lora-r16/`. Copy the final adapter to
-the path the evaluation script expects:
+`train.sh` writes `RUN_ID` to `.last_run_id` when it finishes, so `eval.sh` can pick it up
+automatically without you having to pass it manually.
 
-```bash
-cp -r outputs/sdpo-qwen3-8b-limo-lora-r16 saves/qwen3_sdpo_limo_lora
-```
+**Epistemic probe monitor** — `train.sh` starts `probe_during_training.py` automatically in a
+new tmux pane if you are inside a tmux session. Outside tmux it prints the command to run in a
+second terminal. The probe evaluates at every `checkpoint-N` that is a multiple of
+`PROBE_EVAL_STEPS` (default 20, matching `save_steps` in the YAML), computes the distributional
+alignment metrics from Kim et al. Figure 9, and logs them to wandb.
 
 Key training hyperparameters (see `qwen3_sdpo_lora_sft.yaml` for the full config):
 
@@ -197,15 +192,44 @@ Key training hyperparameters (see `qwen3_sdpo_lora_sft.yaml` for the full config
 |---|---|
 | Base model | `beanie00/math-SDPO-Qwen3-8B-think-step-100` |
 | LoRA rank | 16 |
+| LoRA alpha | 32 |
 | LoRA targets | all attention + FFN projections |
 | Sequence length | 16384 tokens |
-| Epochs | 2 |
-| Learning rate | 5e-5 |
+| Epochs | 2 (~200 steps, 10 checkpoints at save_steps=20) |
+| Learning rate | 5e-5, cosine, 5% warmup |
 | Batch size (effective) | 8 (1 per device × 8 grad accumulation steps) |
 
-### Step 3 — Evaluate on AIME (evaluation env)
+### eval.sh — AIME evaluation + epistemic analysis (eval env for AIME, training env for Figure 9)
 
-#### 3a. Merge the LoRA adapter (one-time, required on vLLM 0.8.5.post1)
+```bash
+source .venv-eval/bin/activate
+./eval.sh                                          # picks up RUN_ID from .last_run_id
+RUN_ID=myrun N_SAMPLING=16 ./eval.sh              # explicit run + more samples
+RUN_ID=myrun SKIP_AIME=1 ./eval.sh               # Figure 9 only (skip AIME eval)
+```
+
+Runs three steps in sequence:
+1. **AIME evaluation** (`eval/evaluate_aime.py`, vLLM) — generates n samples per problem on AIME24/25
+2. **Epistemic token analysis** (`eval/analyze_epistemic.py`) — counts the 10-token set inside `<think>` spans
+3. **Figure 9** (`eval/evaluate_epistemic_alignment.py`) — CDF + KDE density plots of log-prob and entropy
+
+For step 3, if `probe_during_training.py` was running during training its JSON snapshots are used
+directly (no model loading). Otherwise Figure 9 is computed fresh by loading each model.
+
+> **Note:** AIME eval must run in `.venv-eval` (vLLM). Figure 9 / analyze_epistemic run in
+> `.venv-train`. `eval.sh` calls them sequentially; switch envs manually if running steps
+> individually.
+
+---
+
+## Running steps manually
+
+The sections below document the individual scripts that `train.sh` / `eval.sh` call internally.
+Useful for re-running a single step or debugging.
+
+### AIME evaluation (evaluation env)
+
+#### Merge the LoRA adapter (one-time, required on vLLM 0.8.5.post1)
 
 vLLM 0.8.5.post1's Punica LoRA kernels segfault on H100 + CUDA 12.4 + driver 580 during
 `profile_run` — the engine-core subprocess dies on SIGSEGV right after `Using PunicaWrapperGPU`,
@@ -254,7 +278,7 @@ Results are written to `results/{label}_{benchmark}.json`.
 > + CUDA 12.4 at the cost of ~2–3× slower inference. If your server can run vLLM with graphs
 > mode successfully, drop this kwarg in [eval/evaluate_aime.py](eval/evaluate_aime.py) for the speedup.
 
-### Step 4 — Epistemic analysis (training env)
+### Epistemic token analysis (training env)
 
 Counts the Kim et al. 10-token set (`wait`, `hmm`, `perhaps`, `maybe`, `actually`,
 `alternatively`, `seems`, `might`, `likely`, `check`) inside each generation's
@@ -270,7 +294,7 @@ Outputs:
 - `results/epistemic_comparison.png` — bar chart of epistemic token counts
 - `results/length_vs_accuracy.png` — scatter plot
 
-### Step 5 — Token distribution analysis (training env)
+### Token distribution analysis (training env)
 
 Computes **teacher-forced token-level log probabilities and Shannon entropy** over a dataset.
 This is the deepest signal for whether the LoRA has recovered epistemic verbalization: higher
