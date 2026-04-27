@@ -168,6 +168,18 @@ else
     echo "  merged model → $MERGED_DIR"
 fi
 
+# ── Plot epistemic probe curves ───────────────────────────────────────────────
+EPISTEMIC_DIR="$RESULTS_DIR/epistemic_probes"
+LORA_SNAPSHOTS=("${EPISTEMIC_DIR}"/lora_*.json)
+if [ "$SKIP_PROBE" != "1" ] && [ ${#LORA_SNAPSHOTS[@]} -gt 0 ] && [ -f "${LORA_SNAPSHOTS[0]}" ]; then
+    echo ""
+    echo "Plotting epistemic probe curves..."
+    $PY eval/plot_probe_curves.py \
+        --probe_dir "$EPISTEMIC_DIR" \
+        --output "$RESULTS_DIR/probe_curves.png"
+    echo "  probe curves → $RESULTS_DIR/probe_curves.png"
+fi
+
 echo ""
 echo "Training complete. RUN_ID: $RUN_ID"
 echo "  adapter  → $ADAPTER_DIR"
