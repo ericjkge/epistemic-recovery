@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import re
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -34,6 +35,12 @@ try:
     from peft import PeftModel
 except Exception:
     PeftModel = None
+
+try:
+    from transformers import StoppingCriteria, StoppingCriteriaList
+except Exception:
+    StoppingCriteria = object
+    StoppingCriteriaList = None
 
 try:
     from vllm import LLM, SamplingParams
@@ -53,6 +60,73 @@ BOXED_RE = re.compile(r"\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}")
 
 # data/ lives one level up from this script (sdpo_limo_llamafactory/data/)
 _LOCAL_PARQUET_DIR = Path(__file__).parent.parent / "data"
+
+
+# ---------------------------------------------------------------------------
+# Loop detection
+# ---------------------------------------------------------------------------
+
+def make_vllm_loop_detector(window: int, threshold: float, min_tokens: int, eos_token_id: int):
+    """Return a vLLM LogitsProcessor that forces EOS when a trigram loop is detected.
+
+    vLLM calls this once per generated token, passing the token IDs already produced
+    for that specific sequence.  When the most-common token trigram in the last
+    `window` tokens accounts for more than `threshold` of all trigrams in that
+    window, the distribution is collapsed to EOS — terminating the sequence
+    immediately rather than letting it run to max_tokens.
+
+    Calibration (from EXPERIMENT_NOTES.md):
+      - LoRA generates degenerate loops in ~25 % of responses vs ~6 % for baseline.
+      - window=300, threshold=0.35, min_tokens=100 fires within ~50–100 tokens of
+        loop onset and has negligible false-positive rate on legitimate math reasoning
+        (repeated phrases like "Therefore" rarely exceed 10 % trigram share).
+    """
+    def _detect(token_ids: list, logits) -> object:
+        if len(token_ids) < min_tokens:
+            return logits
+        tail = token_ids[-window:]
+        n = len(tail)
+        if n < 3:
+            return logits
+        trigrams = [tuple(tail[i:i + 3]) for i in range(n - 2)]
+        most_common_count = Counter(trigrams).most_common(1)[0][1]
+        if most_common_count / (n - 2) > threshold:
+            logits.fill_(float("-inf"))
+            logits[eos_token_id] = 0.0
+        return logits
+
+    return _detect
+
+
+class _LoopDetectorHF(StoppingCriteria):
+    """HF StoppingCriteria equivalent of make_vllm_loop_detector.
+
+    Returns True (stop) when ALL sequences in the batch are simultaneously in a
+    loop.  With num_return_sequences > 1, HF stops the entire batch together, so
+    this is the least-wasteful policy available via the StoppingCriteria API.
+    """
+
+    def __init__(self, window: int, threshold: float, min_tokens: int):
+        self.window = window
+        self.threshold = threshold
+        self.min_tokens = min_tokens
+
+    def __call__(self, input_ids, scores, **kwargs):
+        stopped = []
+        for seq_ids in input_ids:
+            ids = seq_ids.tolist()
+            if len(ids) < self.min_tokens:
+                stopped.append(False)
+                continue
+            tail = ids[-self.window:]
+            n = len(tail)
+            if n < 3:
+                stopped.append(False)
+                continue
+            trigrams = [tuple(tail[i:i + 3]) for i in range(n - 2)]
+            most_common_count = Counter(trigrams).most_common(1)[0][1]
+            stopped.append(most_common_count / (n - 2) > self.threshold)
+        return all(stopped)
 
 
 # ---------------------------------------------------------------------------
@@ -228,9 +302,39 @@ def run_one_model(
     enable_thinking: bool,
     gpu_memory_utilization: float,
     backend: str,
+    loop_window: int = 300,
+    loop_threshold: float = 0.35,
+    loop_min_tokens: int = 100,
 ):
     print(f"\n{'='*70}\nLoading {label}: {model_path}" + (f" + LoRA {adapter_path}" if adapter_path else ""))
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+
+    # ── Loop detection ────────────────────────────────────────────────────────
+    # Build backend-specific constructs that terminate degenerate repetition loops
+    # early instead of running to max_tokens (~25% of LoRA responses; see
+    # EXPERIMENT_NOTES.md).  loop_window=0 disables detection entirely.
+    active_sp = sampling_params  # replaced below for vllm when loop detection is on
+    hf_stopping = None
+
+    if loop_window > 0:
+        eos_id = tokenizer.eos_token_id or 0
+        if backend == "vllm" and SamplingParams is not None:
+            detector = make_vllm_loop_detector(loop_window, loop_threshold, loop_min_tokens, eos_id)
+            active_sp = SamplingParams(
+                n=sampling_params.n,
+                temperature=sampling_params.temperature,
+                top_p=sampling_params.top_p,
+                top_k=sampling_params.top_k,
+                max_tokens=sampling_params.max_tokens,
+                frequency_penalty=sampling_params.frequency_penalty,
+                logits_processors=[detector],
+            )
+            print(f"  loop detector: window={loop_window} threshold={loop_threshold} min_tokens={loop_min_tokens}")
+        elif backend == "hf" and StoppingCriteriaList is not None:
+            hf_stopping = StoppingCriteriaList(
+                [_LoopDetectorHF(loop_window, loop_threshold, loop_min_tokens)]
+            )
+            print(f"  loop detector (HF): window={loop_window} threshold={loop_threshold} min_tokens={loop_min_tokens}")
 
     if backend == "vllm":
         if LLM is None or SamplingParams is None:
@@ -282,15 +386,15 @@ def run_one_model(
         model_runner.eval()
 
     for bench_name, problems in benchmarks.items():
-        print(f"\n[{label} / {bench_name}] generating n={sampling_params.n} for {len(problems)} problems...")
+        print(f"\n[{label} / {bench_name}] generating n={active_sp.n} for {len(problems)} problems...")
         prompts = build_prompts(tokenizer, problems, enable_thinking=enable_thinking)
 
         if backend == "vllm":
             gen_kwargs = {}
             if lora_request is not None:
                 gen_kwargs["lora_request"] = lora_request
-            print(f"  submitting {len(prompts)} prompts to vLLM (n={sampling_params.n} each)...")
-            completions = model_runner.generate(prompts, sampling_params, **gen_kwargs)
+            print(f"  submitting {len(prompts)} prompts to vLLM (n={active_sp.n} each)...")
+            completions = model_runner.generate(prompts, active_sp, **gen_kwargs)
         else:
             completions = []
             if hasattr(model_runner, "hf_device_map"):
@@ -302,17 +406,19 @@ def run_one_model(
                 encoded = {k: v.to(hf_input_device) for k, v in encoded.items()}
                 input_len = encoded["input_ids"].shape[1]
 
+                hf_gen_kwargs = dict(
+                    do_sample=True,
+                    temperature=sampling_params.temperature,
+                    top_p=sampling_params.top_p,
+                    top_k=sampling_params.top_k,
+                    max_new_tokens=sampling_params.max_tokens,
+                    num_return_sequences=sampling_params.n,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+                if hf_stopping is not None:
+                    hf_gen_kwargs["stopping_criteria"] = hf_stopping
                 with torch.no_grad():
-                    generated = model_runner.generate(
-                        **encoded,
-                        do_sample=True,
-                        temperature=sampling_params.temperature,
-                        top_p=sampling_params.top_p,
-                        top_k=sampling_params.top_k,
-                        max_new_tokens=sampling_params.max_tokens,
-                        num_return_sequences=sampling_params.n,
-                        pad_token_id=tokenizer.eos_token_id,
-                    )
+                    generated = model_runner.generate(**encoded, **hf_gen_kwargs)
 
                 outputs = []
                 for seq in generated:
@@ -424,6 +530,15 @@ def main():
                         help="Inference backend: vllm (default) or hf (Transformers).")
     parser.add_argument("--max_questions", type=int, default=0,
                         help="If > 0, evaluate only the first N questions from each benchmark.")
+
+    # Loop detection — terminates degenerate repetition sequences early instead of
+    # burning the full max_tokens budget.  Set --loop_window 0 to disable.
+    parser.add_argument("--loop_window", type=int, default=300,
+                        help="Trailing token window for trigram-repetition check. 0 = disabled.")
+    parser.add_argument("--loop_threshold", type=float, default=0.35,
+                        help="Fraction of most-common trigram in the window that triggers early stop.")
+    parser.add_argument("--loop_min_tokens", type=int, default=100,
+                        help="Minimum generated tokens before loop detection activates.")
     args = parser.parse_args()
 
     print("Loading benchmarks...")
@@ -463,6 +578,12 @@ def main():
 
     requested = {m.strip() for m in args.models.split(",") if m.strip()}
 
+    loop_kwargs = dict(
+        loop_window=args.loop_window,
+        loop_threshold=args.loop_threshold,
+        loop_min_tokens=args.loop_min_tokens,
+    )
+
     if "baseline" in requested:
         run_one_model(
             label="baseline_sdpo_think_step100",
@@ -476,6 +597,7 @@ def main():
             enable_thinking=True,
             gpu_memory_utilization=args.gpu_memory_utilization,
             backend=args.backend,
+            **loop_kwargs,
         )
 
     if "lora" in requested:
@@ -499,6 +621,7 @@ def main():
             enable_thinking=True,
             gpu_memory_utilization=args.gpu_memory_utilization,
             backend=args.backend,
+            **loop_kwargs,
         )
 
     if "pretrained" in requested:
@@ -514,6 +637,7 @@ def main():
             enable_thinking=True,
             gpu_memory_utilization=args.gpu_memory_utilization,
             backend=args.backend,
+            **loop_kwargs,
         )
 
 

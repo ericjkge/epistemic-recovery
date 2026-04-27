@@ -24,6 +24,7 @@ Run from the sdpo_limo_llamafactory/ parent directory:
 import argparse
 import csv
 import json
+import math
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -135,14 +136,27 @@ def aggregate(results_dir: Path):
             sum(token_totals.values()) / n_samples if n_samples else 0
         )
 
+        # Standard errors.
+        # SE of any-correct rate: each of n_problems is one Bernoulli trial.
+        n_problems = len(results)
+        se_any_correct = (
+            math.sqrt(any_correct * (1 - any_correct) / n_problems) if n_problems > 0 else 0.0
+        )
+        # SE of acc@N: each of n_problems*n_sampling is one Bernoulli trial.
+        n_total = n_problems * n_sampling
+        se_acc = math.sqrt(acc * (1 - acc) / n_total) if n_total > 0 else 0.0
+
         row = {
             "model": label,
             "benchmark": bench,
             f"acc@{n_sampling}": round(acc, 4),
+            f"se_acc@{n_sampling}": round(se_acc, 4),
             "any_correct_rate": round(any_correct, 4),
+            "se_any_correct_rate": round(se_any_correct, 4),
             "avg_response_length": round(avg_resp_len, 1),
             "avg_thinking_length": round(avg_think_len, 1),
             "avg_epistemic_per_response": round(total_epistemic_per_resp, 3),
+            "n_problems": n_problems,
             "n_samples": n_samples,
             "n_sampling": n_sampling,
         }
@@ -170,14 +184,17 @@ def print_table(rows):
     if not rows:
         return
     n_sampling = rows[0].get("n_sampling", 16)
-    cols = ["model", "benchmark", f"acc@{n_sampling}", "any_correct_rate",
+    cols = ["model", "benchmark", f"acc@{n_sampling}", f"se_acc@{n_sampling}",
+            "any_correct_rate", "se_any_correct_rate",
             "avg_response_length", "avg_epistemic_per_response"]
-    widths = {c: max(len(c), max(len(str(r[c])) for r in rows)) for c in cols}
+    # Only include columns that exist in the rows.
+    cols = [c for c in cols if c in rows[0]]
+    widths = {c: max(len(c), max(len(str(r.get(c, ""))) for r in rows)) for c in cols}
     line = "  ".join(c.ljust(widths[c]) for c in cols)
     print("\n" + line)
     print("-" * len(line))
     for r in rows:
-        print("  ".join(str(r[c]).ljust(widths[c]) for c in cols))
+        print("  ".join(str(r.get(c, "")).ljust(widths[c]) for c in cols))
 
 
 def plot_per_token_bars(rows, out_png: Path):
@@ -217,10 +234,17 @@ def plot_per_token_bars(rows, out_png: Path):
     print(f"Wrote {out_png}")
 
 
-def _panel_bar(ax, labels, values, title, ylabel, ylim=None, value_fmt="{:.3f}"):
-    """One panel: one bar per model label, with values annotated above each bar."""
+def _panel_bar(ax, labels, values, title, ylabel, ylim=None, value_fmt="{:.3f}", errors=None):
+    """One panel: one bar per model label, with values annotated above each bar.
+
+    errors: optional list of ±1 SE values for vertical error bars.
+    """
     colors = plt.cm.tab10.colors
     bars = ax.bar(labels, values, color=[colors[i % len(colors)] for i in range(len(labels))])
+    if errors is not None:
+        xs = [bar.get_x() + bar.get_width() / 2 for bar in bars]
+        ax.errorbar(xs, values, yerr=errors, fmt="none", color="black",
+                    capsize=5, capthick=1.5, linewidth=1.5, zorder=5)
     ax.set_title(title)
     ax.set_ylabel(ylabel)
     if ylim is not None:
@@ -252,10 +276,12 @@ def plot_any_correct_bars(rows, out_png: Path):
         bench_rows = {r["model"]: r for r in rows if r["benchmark"] == bench}
         labels = [m for m in models_ordered if m in bench_rows]
         values = [bench_rows[m]["any_correct_rate"] for m in labels]
+        errors = [bench_rows[m].get("se_any_correct_rate", 0.0) for m in labels]
         _panel_bar(ax, labels, values,
                    title=bench,
                    ylabel=f"any-correct rate (pass@{n_sampling})",
-                   ylim=(0, 1.05))
+                   ylim=(0, 1.05),
+                   errors=errors)
 
     fig.suptitle(f"Per-problem pass rate across {n_sampling} samples", y=1.02)
     fig.tight_layout()
@@ -372,6 +398,12 @@ def qualitative_summary(rows):
     base_len = avg(baseline_label, "avg_response_length")
     lora_len = avg(lora_label, "avg_response_length")
     pre_len = avg(pretrained_label, "avg_response_length") if pretrained_label else None
+    # Standard errors (averaged across benchmarks).
+    base_se_any = avg(baseline_label, "se_any_correct_rate") or 0.0
+    lora_se_any = avg(lora_label, "se_any_correct_rate") or 0.0
+    pre_se_any = (avg(pretrained_label, "se_any_correct_rate") or 0.0) if pretrained_label else None
+    base_se_acc = avg(baseline_label, f"se_acc@{n_sampling}") or 0.0
+    lora_se_acc = avg(lora_label, f"se_acc@{n_sampling}") or 0.0
 
     def pct_recovered(base, lora, pre):
         if base is None or lora is None or pre is None:
@@ -404,7 +436,10 @@ def qualitative_summary(rows):
 
     print("\nAccuracy:")
     print(fmt_line(f"{acc_key} (≈ pass@1):", base_acc, lora_acc, pre_acc))
+    print(f"  SE({acc_key}): baseline=±{base_se_acc:.3f}  lora=±{lora_se_acc:.3f}")
     print(fmt_line(f"any-correct (pass@{n_sampling}):", base_any, lora_any, pre_any))
+    se_pre_str = f"  pretrained=±{pre_se_any:.3f}" if pre_se_any is not None else ""
+    print(f"  SE(any-correct):  baseline=±{base_se_any:.3f}  lora=±{lora_se_any:.3f}{se_pre_str}")
     if acc_recov is not None:
         print(f"  → LoRA recovers {acc_recov:.0f}% of the {acc_key} gap toward pretrained.")
     if any_recov is not None:
