@@ -5,3 +5,4 @@ eval/avg_outputs/**/*.jsonl filter=lfs diff=lfs merge=lfs -text
 *.bin filter=lfs diff=lfs merge=lfs -text
 *.ckpt filter=lfs diff=lfs merge=lfs -text
 onpolicy_data_collection/results/** filter=lfs diff=lfs merge=lfs -text
+onpolicy_data_collection/results/math-sdpo-qwen3-8b-think-step-100_limov2_fewshot.jsonl filter=lfs diff=lfs merge=lfs -text
