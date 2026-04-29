@@ -26,7 +26,8 @@ overwrite_cache: true
 preprocessing_num_workers: 16   # H100 nodes have many CPU cores; 16 saturates preprocessing
 
 ### Output
-output_dir: outputs/sdpo-qwen3-8b-limo-lora-r16
+# Placeholder default — train.sh patches this to experiments/${EXPERIMENT}/adapter
+output_dir: experiments/_default/adapter
 logging_steps: 5
 save_steps: 20
 plot_loss: true

@@ -47,14 +47,36 @@ THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 def extract_thinking_span(text: str):
     """Return (thinking_text, had_explicit_block: bool).
 
-    When a generation has `<think>` but no `</think>` (truncated at max_tokens),
-    treat the whole post-tag remainder as the thinking span — otherwise the analyzer
-    silently falls back to counting over the full response, which inflates LoRA counts
-    relative to closed-block baseline generations.
+    Three thinking-mode patterns we see in the wild:
+
+      1. Closed `<think>...</think>` with content → return inner. Standard
+         Qwen3 thinking-mode output.
+      2. Empty `<think></think>` followed by reasoning outside the tags →
+         return the post-`</think>` portion up to the final `\\boxed{}`.
+         LoRA adapters trained on raw LIMO traces (no `<think>` wrapping)
+         learn to emit an empty think block and put all reasoning after it.
+         Without this branch, epistemic counts come back as 0 even though
+         the response is full of "wait/hmm/perhaps/...".
+      3. Open `<think>` without closing (truncated at max_tokens) → return
+         the whole post-tag remainder. Otherwise the analyzer would silently
+         fall back to counting over the full response, inflating counts
+         relative to closed-block baseline generations.
     """
     m = THINK_RE.search(text)
     if m:
-        return m.group(1), True
+        inner = m.group(1)
+        # Case 2: empty/near-empty think with real content after — use post-tag.
+        if len(inner.strip()) < 10 and len(text) - m.end() > 100:
+            tail = text[m.end():]
+            # Trim the final `\boxed{...}` answer line so thinking_length is
+            # comparable to closed-block baselines (which exclude the answer).
+            box_idx = tail.rfind("\\boxed{")
+            if box_idx > 0:
+                # Walk back to the start of the line containing \boxed{.
+                line_start = tail.rfind("\n", 0, box_idx)
+                tail = tail[: line_start if line_start != -1 else box_idx]
+            return tail, True
+        return inner, True
     if "<think>" in text:
         return text.split("<think>", 1)[1], True
     return text, False

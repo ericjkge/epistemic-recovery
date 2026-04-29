@@ -89,9 +89,8 @@ pip install --quiet torch torchvision torchaudio \
   --index-url "https://download.pytorch.org/whl/$CUDA_TAG"
 
 echo "  Cloning + installing LlamaFactory (editable)"
-if [[ ! -d LlamaFactory ]]; then
-  git clone --depth 1 https://github.com/hiyouga/LLaMA-Factory.git LlamaFactory
-fi
+rm -rf LlamaFactory
+git clone --depth 1 https://github.com/hiyouga/LLaMA-Factory.git LlamaFactory
 pip install --quiet -e "./LlamaFactory[torch,metrics]"
 
 if [[ "$WITH_FLASH_ATTN" == "1" ]]; then

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Data prep → LoRA SFT → merge LoRA, with epistemic probe monitor running alongside.
 #
-# Writes the RUN_ID to .last_run_id so eval.sh can pick it up without you having
-# to pass it manually.
+# Writes the EXPERIMENT name to .last_experiment so eval.sh can pick it up
+# without you having to pass it manually.
 #
 # Usage:
-#   ./train.sh                                      # all defaults
-#   RUN_ID=myrun N_EPOCHS=1 ./train.sh              # custom run ID + 1 epoch
+#   ./train.sh                                      # auto-pick next experimentN
+#   EXPERIMENT=experiment3 ./train.sh               # explicit experiment name
+#   N_EPOCHS=1 ./train.sh                           # override hparam
 #   SKIP_DATA=1 SKIP_TRAIN=1 ./train.sh             # re-merge an existing adapter
 #
 # Epistemic probe monitor:
@@ -22,9 +23,17 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
-# ── Identifiers ───────────────────────────────────────────────────────────────
+# ── Experiment identifier ─────────────────────────────────────────────────────
+# Auto-pick the next free experiments/experimentN/ unless EXPERIMENT is set.
+next_experiment_num() {
+    local n=1
+    while [ -d "experiments/experiment${n}" ]; do
+        n=$((n+1))
+    done
+    echo "experiment${n}"
+}
+EXPERIMENT="${EXPERIMENT:-$(next_experiment_num)}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
-RUN_NAME="${RUN_NAME:-sdpo_limo_lora_${RUN_ID}}"
 
 # ── Model paths ───────────────────────────────────────────────────────────────
 BASE_MODEL="${BASE_MODEL:-beanie00/math-SDPO-Qwen3-8B-think-step-100}"
@@ -39,9 +48,10 @@ GRAD_ACCUM="${GRAD_ACCUM:-8}"
 BASE_YAML="qwen3_sdpo_lora_sft.yaml"
 
 # ── Path layout ───────────────────────────────────────────────────────────────
-ADAPTER_DIR="${ADAPTER_DIR:-outputs/${RUN_NAME}}"
+EXP_DIR="experiments/${EXPERIMENT}"
+ADAPTER_DIR="${ADAPTER_DIR:-${EXP_DIR}/adapter}"
 MERGED_DIR="${MERGED_DIR:-${ADAPTER_DIR}/merged}"
-RESULTS_DIR="${RESULTS_DIR:-results/${RUN_ID}}"
+RESULTS_DIR="${RESULTS_DIR:-${EXP_DIR}/eval_results}"
 
 # ── Epistemic probe monitor ───────────────────────────────────────────────────
 # eval_every_n_steps should match or divide save_steps in the training YAML
@@ -61,11 +71,11 @@ PY="${PYTHON:-python3}"
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 mkdir -p "$RESULTS_DIR"
-echo "$RUN_ID" > .last_run_id
+echo "$EXPERIMENT" > .last_experiment
 
 cat > "$RESULTS_DIR/train_config.txt" <<EOF
+EXPERIMENT         $EXPERIMENT
 RUN_ID             $RUN_ID
-RUN_NAME           $RUN_NAME
 BASE_MODEL         $BASE_MODEL
 PRETRAINED_MODEL   $PRETRAINED_MODEL
 ADAPTER_DIR        $ADAPTER_DIR
@@ -81,7 +91,7 @@ PROBE_EVAL_STEPS   $PROBE_EVAL_STEPS
 WANDB_PROJECT      $WANDB_PROJECT
 DATE               $(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
-echo "RUN_ID: $RUN_ID"
+echo "EXPERIMENT: $EXPERIMENT  (RUN_ID: $RUN_ID)"
 echo "Config → $RESULTS_DIR/train_config.txt"
 
 # ── Step 1: Dataset prep ──────────────────────────────────────────────────────
@@ -128,7 +138,7 @@ else
         --eval_every_n_steps $PROBE_EVAL_STEPS \
         --max_idle_minutes $PROBE_IDLE_MINUTES"
     if [ -n "${WANDB_PROJECT:-}" ]; then
-        PROBE_CMD="$PROBE_CMD --wandb_project \"$WANDB_PROJECT\" --wandb_run_name \"${RUN_NAME}_probe\""
+        PROBE_CMD="$PROBE_CMD --wandb_project \"$WANDB_PROJECT\" --wandb_run_name \"${EXPERIMENT}_probe\""
     fi
 
     if [ "$SKIP_PROBE" = "1" ]; then
@@ -181,10 +191,10 @@ if [ "$SKIP_PROBE" != "1" ] && [ ${#LORA_SNAPSHOTS[@]} -gt 0 ] && [ -f "${LORA_S
 fi
 
 echo ""
-echo "Training complete. RUN_ID: $RUN_ID"
+echo "Training complete. EXPERIMENT: $EXPERIMENT  (RUN_ID: $RUN_ID)"
 echo "  adapter  → $ADAPTER_DIR"
 echo "  merged   → ${MERGED_DIR:-"(skipped)"}"
 echo "  probes   → $RESULTS_DIR/epistemic_probes/"
 echo ""
 echo "Run evaluation:"
-echo "  RUN_ID=$RUN_ID ./eval.sh"
+echo "  EXPERIMENT=$EXPERIMENT ./eval.sh    # or just ./eval.sh (reads .last_experiment)"

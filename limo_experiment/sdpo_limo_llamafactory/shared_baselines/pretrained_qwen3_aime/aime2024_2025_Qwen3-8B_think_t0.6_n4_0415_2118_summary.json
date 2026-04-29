@@ -1,0 +1,32 @@
+{
+  "model": "./models/Qwen3-8B",
+  "aime_years": [
+    2024,
+    2025
+  ],
+  "n_problems": 60,
+  "n_samples": 4,
+  "enable_thinking": true,
+  "temperature": 0.6,
+  "accuracy_pass_at_1": 0.8,
+  "correct_count": 48,
+  "avg_response_tokens": 16065.679166666667,
+  "epistemic": {
+    "total": 45179,
+    "avg_per_response": 188.24583333333334,
+    "avg_per_problem": 752.9833333333333,
+    "per_word": {
+      "wait": 19444,
+      "hmm": 328,
+      "perhaps": 1949,
+      "maybe": 7090,
+      "actually": 769,
+      "alternatively": 5595,
+      "seems": 2019,
+      "might": 1268,
+      "likely": 248,
+      "check": 6469
+    }
+  },
+  "timestamp": "0415_2118"
+}

@@ -1,0 +1,32 @@
+{
+  "model": "./models/math-SDPO-Qwen3-8B-think-step-100",
+  "aime_years": [
+    2024,
+    2025
+  ],
+  "n_problems": 60,
+  "n_samples": 4,
+  "enable_thinking": true,
+  "temperature": 0.6,
+  "accuracy_pass_at_1": 0.7,
+  "correct_count": 42,
+  "avg_response_tokens": 8695.454166666666,
+  "epistemic": {
+    "total": 13129,
+    "avg_per_response": 54.704166666666666,
+    "avg_per_problem": 218.81666666666666,
+    "per_word": {
+      "wait": 5076,
+      "hmm": 158,
+      "perhaps": 692,
+      "maybe": 1659,
+      "actually": 421,
+      "alternatively": 1389,
+      "seems": 872,
+      "might": 858,
+      "likely": 274,
+      "check": 1730
+    }
+  },
+  "timestamp": "0415_2036"
+}

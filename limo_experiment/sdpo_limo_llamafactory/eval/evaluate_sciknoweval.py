@@ -39,11 +39,6 @@ except Exception:
     PeftModel = None
 
 try:
-    from transformers import StoppingCriteriaList
-except Exception:
-    StoppingCriteriaList = None
-
-try:
     from vllm import LLM, SamplingParams
     from vllm.lora.request import LoRARequest
 except Exception:
@@ -51,14 +46,7 @@ except Exception:
     SamplingParams = None
     LoRARequest = None
 
-# Reuse the loop detector + model identity constants from evaluate_aime so the
-# two evaluators stay in lock-step.
-from evaluate_aime import (
-    BASE_MODEL,
-    PRETRAINED,
-    make_vllm_loop_detector,
-    _LoopDetectorHF,
-)
+from evaluate_aime import BASE_MODEL, PRETRAINED
 
 
 _DATA_DIR = Path(__file__).parent.parent / "data"
@@ -175,34 +163,9 @@ def run_one_model(
     gpu_memory_utilization: float,
     backend: str,
     benchmark_label: str = "sciknoweval_chemistry",
-    loop_window: int = 300,
-    loop_threshold: float = 0.35,
-    loop_min_tokens: int = 100,
 ):
     print(f"\n{'='*70}\nLoading {label}: {model_path}" + (f" + LoRA {adapter_path}" if adapter_path else ""))
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-
-    active_sp = sampling_params
-    hf_stopping = None
-
-    if loop_window > 0:
-        eos_id = tokenizer.eos_token_id or 0
-        if backend == "vllm" and SamplingParams is not None:
-            detector = make_vllm_loop_detector(loop_window, loop_threshold, loop_min_tokens, eos_id)
-            active_sp = SamplingParams(
-                n=sampling_params.n,
-                temperature=sampling_params.temperature,
-                top_p=sampling_params.top_p,
-                top_k=sampling_params.top_k,
-                max_tokens=sampling_params.max_tokens,
-                frequency_penalty=sampling_params.frequency_penalty,
-                logits_processors=[detector],
-            )
-            print(f"  loop detector: window={loop_window} threshold={loop_threshold} min_tokens={loop_min_tokens}")
-        elif backend == "hf" and StoppingCriteriaList is not None:
-            hf_stopping = StoppingCriteriaList(
-                [_LoopDetectorHF(loop_window, loop_threshold, loop_min_tokens)]
-            )
 
     if backend == "vllm":
         if LLM is None or SamplingParams is None:
@@ -244,14 +207,14 @@ def run_one_model(
                 model_runner = model_runner.to(hf_device)
         model_runner.eval()
 
-    print(f"\n[{label} / {benchmark_label}] generating n={active_sp.n} for {len(problems)} problems...")
+    print(f"\n[{label} / {benchmark_label}] generating n={sampling_params.n} for {len(problems)} problems...")
     prompts = build_prompts(tokenizer, problems, enable_thinking=enable_thinking)
 
     if backend == "vllm":
         gen_kwargs = {}
         if lora_request is not None:
             gen_kwargs["lora_request"] = lora_request
-        completions = model_runner.generate(prompts, active_sp, **gen_kwargs)
+        completions = model_runner.generate(prompts, sampling_params, **gen_kwargs)
     else:
         completions = []
         if hasattr(model_runner, "hf_device_map"):
@@ -271,8 +234,6 @@ def run_one_model(
                 num_return_sequences=sampling_params.n,
                 pad_token_id=tokenizer.eos_token_id,
             )
-            if hf_stopping is not None:
-                hf_gen_kwargs["stopping_criteria"] = hf_stopping
             with torch.no_grad():
                 generated = model_runner.generate(**encoded, **hf_gen_kwargs)
             outputs = []
@@ -359,7 +320,7 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top_p", type=float, default=0.95)
     parser.add_argument("--top_k", type=int, default=20)
-    parser.add_argument("--frequency_penalty", type=float, default=0.3)
+    parser.add_argument("--frequency_penalty", type=float, default=0.0)
     parser.add_argument("--max_model_len", type=int, default=12288)
     parser.add_argument("--tensor_parallel_size", type=int,
                         default=len(os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")))
@@ -372,9 +333,6 @@ def main():
     parser.add_argument("--max_questions", type=int, default=0,
                         help="If > 0, evaluate only the first N questions.")
 
-    parser.add_argument("--loop_window", type=int, default=300)
-    parser.add_argument("--loop_threshold", type=float, default=0.35)
-    parser.add_argument("--loop_min_tokens", type=int, default=100)
     args = parser.parse_args()
 
     print(f"Loading SciKnowEval chemistry from {args.data_path}...")
@@ -408,12 +366,6 @@ def main():
     results_dir.mkdir(parents=True, exist_ok=True)
     requested = {m.strip() for m in args.models.split(",") if m.strip()}
 
-    loop_kwargs = dict(
-        loop_window=args.loop_window,
-        loop_threshold=args.loop_threshold,
-        loop_min_tokens=args.loop_min_tokens,
-    )
-
     if "baseline" in requested:
         run_one_model(
             label="baseline_sdpo_think_step100",
@@ -427,7 +379,6 @@ def main():
             enable_thinking=True,
             gpu_memory_utilization=args.gpu_memory_utilization,
             backend=args.backend,
-            **loop_kwargs,
         )
 
     if "lora" in requested:
@@ -451,7 +402,6 @@ def main():
             enable_thinking=True,
             gpu_memory_utilization=args.gpu_memory_utilization,
             backend=args.backend,
-            **loop_kwargs,
         )
 
     if "pretrained" in requested:
@@ -467,7 +417,6 @@ def main():
             enable_thinking=True,
             gpu_memory_utilization=args.gpu_memory_utilization,
             backend=args.backend,
-            **loop_kwargs,
         )
 
 

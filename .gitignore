@@ -154,6 +154,16 @@ limo_experiment/sdpo_limo_llamafactory/outputs/**/merged/*.safetensors
 limo_experiment/sdpo_limo_llamafactory/outputs/**/checkpoint-*/
 # Per-run state file written by train.sh
 limo_experiment/sdpo_limo_llamafactory/.last_run_id
+limo_experiment/sdpo_limo_llamafactory/.last_experiment
+
+# Experiment-based layout (mirrors the outputs/ rules above)
+!limo_experiment/sdpo_limo_llamafactory/experiments/
+!limo_experiment/sdpo_limo_llamafactory/experiments/**
+limo_experiment/sdpo_limo_llamafactory/experiments/**/merged/*.safetensors
+limo_experiment/sdpo_limo_llamafactory/experiments/**/checkpoint-*/
+# Smoke/dryrun experiments — local-only, not for git
+limo_experiment/sdpo_limo_llamafactory/experiments/experiment_smoke/
+limo_experiment/sdpo_limo_llamafactory/experiments/experiment_dryrun/
 
 # Eval venv and locally-generated merged model (regenerated via eval/merge_lora.py)
 limo_experiment/sdpo_limo_llamafactory/.venv-eval/

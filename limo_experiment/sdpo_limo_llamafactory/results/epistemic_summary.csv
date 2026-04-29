@@ -1,5 +1,0 @@
-model,benchmark,acc@4,any_correct_rate,avg_response_length,avg_thinking_length,avg_epistemic_per_response,n_samples,n_sampling,wait,hmm,perhaps,maybe,actually,alternatively,seems,might,likely,check
-baseline_sdpo_think_step100,aime24,0.6167,0.7667,8683.3,7697.2,51.358,120,4,22.908,0.792,2.158,6.9,1.35,4.967,3.225,2.342,0.842,5.875
-baseline_sdpo_think_step100,aime25,0.425,0.5333,9430.4,8217.9,59.558,120,4,25.592,0.508,2.975,7.892,1.717,5.525,4.35,3.292,0.992,6.717
-lora_sdpo_plus_limo,aime24,0.6,0.8667,18401.8,17224.7,279.525,120,4,62.325,40.4,62.358,34.05,8.525,56.092,2.467,3.625,0.783,8.9
-lora_sdpo_plus_limo,aime25,0.5333,0.7333,18341.3,17546.8,301.45,120,4,68.85,26.3,82.642,18.208,15.775,66.2,3.308,8.575,0.45,11.142

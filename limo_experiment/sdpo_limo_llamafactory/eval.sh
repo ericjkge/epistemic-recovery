@@ -1,56 +1,54 @@
 #!/usr/bin/env bash
 # AIME evaluation → epistemic token analysis → Figure 9 alignment plots.
 #
-# Reads RUN_ID from the environment or from .last_run_id (written by train.sh).
-# All paths are derived from RUN_ID, so no manual coordination is needed when
-# running eval.sh immediately after train.sh on the same machine.
+# Reads EXPERIMENT from the environment or from .last_experiment (written by
+# train.sh). All paths are derived from EXPERIMENT, so no manual coordination
+# is needed when running eval.sh immediately after train.sh.
 #
 # Usage:
-#   ./eval.sh                                       # uses RUN_ID from .last_run_id
-#   RUN_ID=myrun ./eval.sh                          # explicit run ID
-#   RUN_ID=myrun N_SAMPLING=16 MODELS=baseline,lora,pretrained ./eval.sh
-#   RUN_ID=myrun SKIP_AIME=1 ./eval.sh             # Figure 9 only (skip AIME)
-#   RUN_ID=myrun SKIP_SCIKNOWEVAL=0 ./eval.sh      # include chemistry MCQ regression check
+#   ./eval.sh                                              # uses .last_experiment
+#   EXPERIMENT=experiment2 ./eval.sh                       # explicit experiment
+#   EXPERIMENT=experiment2 N_SAMPLING=16 MODELS=baseline,lora,pretrained ./eval.sh
+#   EXPERIMENT=experiment2 SKIP_AIME=1 ./eval.sh           # Figure 9 only (skip AIME)
+#   EXPERIMENT=experiment2 SKIP_SCIKNOWEVAL=0 ./eval.sh    # include chemistry MCQ regression check
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
-# ── Resolve RUN_ID ────────────────────────────────────────────────────────────
-if [ -z "${RUN_ID:-}" ]; then
-    if [ -f .last_run_id ]; then
-        RUN_ID="$(cat .last_run_id)"
-        echo "Using RUN_ID from .last_run_id: $RUN_ID"
+# ── Resolve EXPERIMENT ────────────────────────────────────────────────────────
+if [ -z "${EXPERIMENT:-}" ]; then
+    if [ -f .last_experiment ]; then
+        EXPERIMENT="$(cat .last_experiment)"
+        echo "Using EXPERIMENT from .last_experiment: $EXPERIMENT"
     else
-        echo "ERROR: RUN_ID not set and .last_run_id not found."
-        echo "       Run train.sh first, or set RUN_ID explicitly."
+        echo "ERROR: EXPERIMENT not set and .last_experiment not found."
+        echo "       Run train.sh first, or set EXPERIMENT explicitly."
         exit 1
     fi
 fi
-RUN_NAME="${RUN_NAME:-sdpo_limo_lora_${RUN_ID}}"
 
 # ── Model paths ───────────────────────────────────────────────────────────────
 BASE_MODEL="${BASE_MODEL:-beanie00/math-SDPO-Qwen3-8B-think-step-100}"
 PRETRAINED_MODEL="${PRETRAINED_MODEL:-Qwen/Qwen3-8B}"
 
 # ── Path layout (must match train.sh) ────────────────────────────────────────
-ADAPTER_DIR="${ADAPTER_DIR:-outputs/${RUN_NAME}}"
+EXP_DIR="experiments/${EXPERIMENT}"
+ADAPTER_DIR="${ADAPTER_DIR:-${EXP_DIR}/adapter}"
 MERGED_DIR="${MERGED_DIR:-${ADAPTER_DIR}/merged}"
-RESULTS_DIR="${RESULTS_DIR:-results/${RUN_ID}}"
+RESULTS_DIR="${RESULTS_DIR:-${EXP_DIR}/eval_results}"
 
 # ── AIME sampling ─────────────────────────────────────────────────────────────
 N_SAMPLING="${N_SAMPLING:-4}"
 MAX_TOKENS="${MAX_TOKENS:-24576}"
-FREQUENCY_PENALTY="${FREQUENCY_PENALTY:-0.3}"
+# vLLM context window — must be >= prompt + MAX_TOKENS or generations get clamped.
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-28672}"
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
+FREQUENCY_PENALTY="${FREQUENCY_PENALTY:-0.0}"
 BENCHMARKS="${BENCHMARKS:-aime24,aime25}"
 # baseline = SDPO model without adapter, lora = SDPO + LoRA adapter
 # add "pretrained" to include Qwen3-8B upper bound (slow — loads a third model)
 MODELS="${MODELS:-baseline,lora}"
-
-# ── Loop detection ────────────────────────────────────────────────────────────
-LOOP_WINDOW="${LOOP_WINDOW:-300}"
-LOOP_THRESHOLD="${LOOP_THRESHOLD:-0.35}"
-LOOP_MIN_TOKENS="${LOOP_MIN_TOKENS:-100}"
 
 # ── Figure 9 / epistemic alignment ───────────────────────────────────────────
 N_PROBES="${N_PROBES:-50}"
@@ -72,9 +70,10 @@ SKIP_EPISTEMIC="${SKIP_EPISTEMIC:-0}"
 PY="${PYTHON:-python3}"
 
 # ── Sanity check ──────────────────────────────────────────────────────────────
-if [ ! -d "$RESULTS_DIR" ]; then
-    echo "ERROR: RESULTS_DIR not found: $RESULTS_DIR"
-    echo "       Has train.sh been run for RUN_ID=$RUN_ID?"
+mkdir -p "$RESULTS_DIR"
+if [ ! -d "$EXP_DIR" ]; then
+    echo "ERROR: EXP_DIR not found: $EXP_DIR"
+    echo "       Has train.sh been run for EXPERIMENT=$EXPERIMENT?"
     exit 1
 fi
 if [ ! -d "$ADAPTER_DIR" ] && [ ! -d "$MERGED_DIR" ]; then
@@ -93,7 +92,7 @@ SCIKNOWEVAL_DATA   $SCIKNOWEVAL_DATA
 SCIKNOWEVAL_NS     $SCIKNOWEVAL_N_SAMPLING
 SCIKNOWEVAL_MODELS $SCIKNOWEVAL_MODELS
 EOF
-echo "RUN_ID: $RUN_ID"
+echo "EXPERIMENT: $EXPERIMENT"
 
 # ── Step 1: AIME evaluation ───────────────────────────────────────────────────
 echo ""
@@ -108,10 +107,9 @@ else
         --models "$MODELS"
         --n_sampling "$N_SAMPLING"
         --max_tokens "$MAX_TOKENS"
+        --max_model_len "$MAX_MODEL_LEN"
+        --gpu_memory_utilization "$GPU_MEMORY_UTILIZATION"
         --frequency_penalty "$FREQUENCY_PENALTY"
-        --loop_window "$LOOP_WINDOW"
-        --loop_threshold "$LOOP_THRESHOLD"
-        --loop_min_tokens "$LOOP_MIN_TOKENS"
     )
     if [ -d "${MERGED_DIR:-}" ]; then
         EVAL_ARGS+=(--lora_merged_path "$MERGED_DIR")
@@ -135,9 +133,6 @@ else
         --n_sampling "$SCIKNOWEVAL_N_SAMPLING"
         --max_tokens "$SCIKNOWEVAL_MAX_TOKENS"
         --frequency_penalty "$FREQUENCY_PENALTY"
-        --loop_window "$LOOP_WINDOW"
-        --loop_threshold "$LOOP_THRESHOLD"
-        --loop_min_tokens "$LOOP_MIN_TOKENS"
     )
     if [ -d "${MERGED_DIR:-}" ]; then
         SKE_ARGS+=(--lora_merged_path "$MERGED_DIR")

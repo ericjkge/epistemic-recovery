@@ -30,3 +30,7 @@ peft>=0.14.0
 # AIME benchmark loading + HuggingFace model downloads
 datasets>=2.14.0
 huggingface_hub>=0.23.0
+
+# Plotting (used by analyze_epistemic.py, plot_probe_curves.py,
+# analyze_token_distribution.py, evaluate_epistemic_alignment.py)
+matplotlib>=3.7.0
