@@ -10,6 +10,7 @@
 #   RUN_ID=myrun ./eval.sh                          # explicit run ID
 #   RUN_ID=myrun N_SAMPLING=16 MODELS=baseline,lora,pretrained ./eval.sh
 #   RUN_ID=myrun SKIP_AIME=1 ./eval.sh             # Figure 9 only (skip AIME)
+#   RUN_ID=myrun SKIP_SCIKNOWEVAL=0 ./eval.sh      # include chemistry MCQ regression check
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,8 +55,18 @@ LOOP_MIN_TOKENS="${LOOP_MIN_TOKENS:-100}"
 # ── Figure 9 / epistemic alignment ───────────────────────────────────────────
 N_PROBES="${N_PROBES:-50}"
 
+# ── SciKnowEval chemistry (in-domain knowledge regression check) ─────────────
+# Verifies that LoRA gains on OOD math (AIME) don't come at the cost of
+# in-domain chemistry knowledge.  Default models = baseline,lora (no pretrained
+# since the OOD-vs-in-domain story is a baseline-vs-LoRA delta).
+SCIKNOWEVAL_DATA="${SCIKNOWEVAL_DATA:-data/sciknoweval_chemistry.jsonl}"
+SCIKNOWEVAL_N_SAMPLING="${SCIKNOWEVAL_N_SAMPLING:-4}"
+SCIKNOWEVAL_MAX_TOKENS="${SCIKNOWEVAL_MAX_TOKENS:-8192}"
+SCIKNOWEVAL_MODELS="${SCIKNOWEVAL_MODELS:-baseline,lora}"
+
 # ── Skip flags ────────────────────────────────────────────────────────────────
 SKIP_AIME="${SKIP_AIME:-0}"
+SKIP_SCIKNOWEVAL="${SKIP_SCIKNOWEVAL:-0}"
 SKIP_EPISTEMIC="${SKIP_EPISTEMIC:-0}"
 
 PY="${PYTHON:-python3}"
@@ -78,6 +89,9 @@ N_SAMPLING         $N_SAMPLING
 MAX_TOKENS         $MAX_TOKENS
 BENCHMARKS         $BENCHMARKS
 MODELS             $MODELS
+SCIKNOWEVAL_DATA   $SCIKNOWEVAL_DATA
+SCIKNOWEVAL_NS     $SCIKNOWEVAL_N_SAMPLING
+SCIKNOWEVAL_MODELS $SCIKNOWEVAL_MODELS
 EOF
 echo "RUN_ID: $RUN_ID"
 
@@ -103,6 +117,32 @@ else
         EVAL_ARGS+=(--lora_merged_path "$MERGED_DIR")
     fi
     $PY eval/evaluate_aime.py "${EVAL_ARGS[@]}"
+fi
+
+# ── Step 1b: SciKnowEval chemistry (in-domain regression check) ──────────────
+echo ""
+echo "[1b/3] SciKnowEval chemistry (n=${SCIKNOWEVAL_N_SAMPLING}, models=${SCIKNOWEVAL_MODELS})"
+if [ "$SKIP_SCIKNOWEVAL" = "1" ]; then
+    echo "  SKIP_SCIKNOWEVAL=1 — skipping"
+elif [ ! -f "$SCIKNOWEVAL_DATA" ]; then
+    echo "  WARNING: $SCIKNOWEVAL_DATA not found — skipping SciKnowEval"
+else
+    SKE_ARGS=(
+        --adapter_path "$ADAPTER_DIR"
+        --data_path "$SCIKNOWEVAL_DATA"
+        --results_dir "$RESULTS_DIR"
+        --models "$SCIKNOWEVAL_MODELS"
+        --n_sampling "$SCIKNOWEVAL_N_SAMPLING"
+        --max_tokens "$SCIKNOWEVAL_MAX_TOKENS"
+        --frequency_penalty "$FREQUENCY_PENALTY"
+        --loop_window "$LOOP_WINDOW"
+        --loop_threshold "$LOOP_THRESHOLD"
+        --loop_min_tokens "$LOOP_MIN_TOKENS"
+    )
+    if [ -d "${MERGED_DIR:-}" ]; then
+        SKE_ARGS+=(--lora_merged_path "$MERGED_DIR")
+    fi
+    $PY eval/evaluate_sciknoweval.py "${SKE_ARGS[@]}"
 fi
 
 # ── Step 2: Epistemic token analysis ─────────────────────────────────────────
