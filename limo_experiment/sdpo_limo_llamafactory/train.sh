@@ -45,7 +45,10 @@ LORA_RANK="${LORA_RANK:-16}"
 LR="${LR:-5e-5}"
 CUTOFF_LEN="${CUTOFF_LEN:-16384}"
 GRAD_ACCUM="${GRAD_ACCUM:-8}"
-BASE_YAML="qwen3_sdpo_lora_sft.yaml"
+BASE_YAML="${BASE_YAML:-qwen3_sdpo_lora_sft.yaml}"
+# DATASET overrides `dataset:` in the yaml. Default = limo_v2_sdpo (matches the
+# unpatched yaml). Used by experiment 5 to plug in on-policy injection data.
+DATASET="${DATASET:-limo_v2_sdpo}"
 
 # ── Path layout ───────────────────────────────────────────────────────────────
 EXP_DIR="experiments/${EXPERIMENT}"
@@ -123,6 +126,7 @@ else
         -e "s|learning_rate:.*|learning_rate: ${LR}|" \
         -e "s|cutoff_len:.*|cutoff_len: ${CUTOFF_LEN}|" \
         -e "s|gradient_accumulation_steps:.*|gradient_accumulation_steps: ${GRAD_ACCUM}|" \
+        -e "s|^dataset:.*|dataset: ${DATASET}|" \
         "$BASE_YAML" > "$PATCHED_YAML"
     cp "$PATCHED_YAML" "$RESULTS_DIR/training_config.yaml"
     echo "  effective config → $RESULTS_DIR/training_config.yaml"
