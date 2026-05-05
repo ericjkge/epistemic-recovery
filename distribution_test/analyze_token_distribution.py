@@ -2,6 +2,7 @@ import json
 import os
 import argparse
 import csv
+import re
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -16,6 +17,35 @@ except Exception:
     load_dataset = None
 
 
+def sanitize_output_prefix(model_name_or_path):
+    """Convert a model name or local path into a filesystem-friendly prefix."""
+    prefix = model_name_or_path.strip().strip(os.sep)
+    prefix = prefix.replace(os.sep, "-").replace("/", "-")
+    prefix = re.sub(r"[^A-Za-z0-9._-]+", "-", prefix)
+    prefix = re.sub(r"-+", "-", prefix).strip("-._")
+    return prefix or "model"
+
+
+def resolve_output_paths(args):
+    prefix = args.output_prefix or sanitize_output_prefix(args.model_name_or_path)
+    if not args.output_prefix and args.enable_thinking is not None:
+        prefix = f"{prefix}_think-{'on' if args.enable_thinking else 'off'}"
+    output_dir = args.output_dir
+
+    defaults = {
+        "output_csv": f"{prefix}_token_stats.csv",
+        "output_special_csv": f"{prefix}_special_tokens.csv",
+        "output_all_logprobs_csv": f"{prefix}_all_logprobs.csv",
+        "output_all_entropies_csv": f"{prefix}_all_entropies.csv",
+        "output_plot": f"{prefix}_logprob_dist.png",
+        "output_special_plot": f"{prefix}_special_token_dist.png",
+    }
+
+    for attr, filename in defaults.items():
+        if getattr(args, attr) is None:
+            setattr(args, attr, os.path.join(output_dir, filename))
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Analyze token-level log probability and entropy distributions across a dataset."
@@ -26,12 +56,30 @@ def parse_args():
     parser.add_argument("--dataset_split", type=str, default="train")
     parser.add_argument("--max_samples", type=int, default=0,
                         help="If > 0, analyze only the first N samples")
-    parser.add_argument("--output_csv", type=str, default="analysis/results/math-SDPO-Qwen3-8B-think-step-100_token_stats.csv")
-    parser.add_argument("--output_special_csv", type=str, default="analysis/results/math-SDPO-Qwen3-8B-think-step-100_special_tokens.csv")
-    parser.add_argument("--output_all_logprobs_csv", type=str, default="analysis/results/math-SDPO-Qwen3-8B-think-step-100_all_logprobs.csv")
-    parser.add_argument("--output_all_entropies_csv", type=str, default="analysis/results/math-SDPO-Qwen3-8B-think-step-100_all_entropies.csv")
-    parser.add_argument("--output_plot", type=str, default="analysis/results/math-SDPO-Qwen3-8B-think-step-100_logprob_dist.png")
-    parser.add_argument("--output_special_plot", type=str, default="analysis/results/math-SDPO-Qwen3-8B-think-step-100_special_token_dist.png")
+    parser.add_argument(
+        "--enable-thinking",
+        "--enable_thinking",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Pass enable_thinking to tokenizer.apply_chat_template. Use --enable-thinking for think-on, "
+             "--no-enable-thinking for think-off. Defaults to tokenizer behavior.",
+    )
+    parser.add_argument("--output_dir", type=str, default="analysis/results",
+                        help="Directory for auto-named outputs")
+    parser.add_argument("--output_prefix", type=str, default="",
+                        help="Filename prefix for auto-named outputs. Defaults to sanitized model_name_or_path")
+    parser.add_argument("--output_csv", type=str, default=None,
+                        help="Per-token aggregate CSV. Defaults to <output_dir>/<prefix>_token_stats.csv")
+    parser.add_argument("--output_special_csv", type=str, default=None,
+                        help="Special-token occurrence CSV. Defaults to <output_dir>/<prefix>_special_tokens.csv")
+    parser.add_argument("--output_all_logprobs_csv", type=str, default=None,
+                        help="Logprob histogram CSV. Defaults to <output_dir>/<prefix>_all_logprobs.csv")
+    parser.add_argument("--output_all_entropies_csv", type=str, default=None,
+                        help="Entropy histogram CSV. Defaults to <output_dir>/<prefix>_all_entropies.csv")
+    parser.add_argument("--output_plot", type=str, default=None,
+                        help="Logprob distribution plot. Defaults to <output_dir>/<prefix>_logprob_dist.png")
+    parser.add_argument("--output_special_plot", type=str, default=None,
+                        help="Special-token distribution plot. Defaults to <output_dir>/<prefix>_special_token_dist.png")
     parser.add_argument("--special_tokens", type=str, nargs="*", default=["Wait", "Alternatively"],
                         help="List of special tokens to track individually (resolved dynamically per model)")
     parser.add_argument(
@@ -45,7 +93,9 @@ def parse_args():
     parser.add_argument("--output_keys", type=str, nargs="*", default=["output", "solution", "reasoning", "completion", "response"])
     parser.add_argument("--system_keys", type=str, nargs="*", default=["system"])
     parser.add_argument("--input_keys", type=str, nargs="*", default=["input", "context"])
-    return parser.parse_args()
+    args = parser.parse_args()
+    resolve_output_paths(args)
+    return args
 
 
 def load_model(model_name_or_path, dtype="float16"):
@@ -96,7 +146,7 @@ def resolve_special_token_ids(tokenizer, token_strings):
     return special_tokens
 
 
-def build_chat_prompt(tokenizer, system, instruction, user_input):
+def build_chat_prompt(tokenizer, system, instruction, user_input, enable_thinking=None):
     """Construct a chat-formatted prompt string using the tokenizer's chat template."""
     messages = []
 
@@ -109,10 +159,15 @@ def build_chat_prompt(tokenizer, system, instruction, user_input):
 
     messages.append({"role": "user", "content": user_content})
 
+    chat_template_kwargs = {}
+    if enable_thinking is not None:
+        chat_template_kwargs["enable_thinking"] = enable_thinking
+
     return tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=True,
+        **chat_template_kwargs,
     )
 
 
@@ -407,6 +462,11 @@ def print_special_token_summary(special_tokens):
 def main():
     args = parse_args()
 
+    if args.enable_thinking is not None:
+        print(f"Chat template thinking mode: {'enabled' if args.enable_thinking else 'disabled'}")
+    else:
+        print("Chat template thinking mode: tokenizer default")
+
     print("Loading model...")
     tokenizer, model = load_model(args.model_name_or_path, args.dtype)
 
@@ -449,6 +509,7 @@ def main():
             data.get("system", ""),
             data.get("instruction", ""),
             data.get("input", ""),
+            args.enable_thinking,
         )
 
         tokens, token_ids, logprobs, entropies, prompt_token_len = compute_token_stats(
