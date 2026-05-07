@@ -87,10 +87,10 @@ def main():
     ap.add_argument("--require_injection", action="store_true",
                     help="Keep ONLY problems that needed >=1 retry. Useful for ablating "
                          "whether the injection signal alone drives the gain.")
-    ap.add_argument("--max_chars", type=int, default=80_000,
+    ap.add_argument("--max_chars", type=int, default=160_000,
                     help="Drop traces longer than this many chars in the assembled "
-                         "output. The training cutoff_len is 16K tokens ≈ 64K chars; "
-                         "80K leaves a margin and avoids silently truncating examples.")
+                         "output. The training cutoff_len is 32K tokens ≈ 120K chars; "
+                         "160K leaves a margin and avoids silently truncating examples.")
     args = ap.parse_args()
 
     traces_path = Path(args.traces)

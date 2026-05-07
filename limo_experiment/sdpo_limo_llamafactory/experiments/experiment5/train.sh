@@ -36,8 +36,8 @@ SEEDS_PATH="${SEEDS_PATH:-$EXP5_DIR/seed_problems.jsonl}"
 POLICY="${POLICY:-lora}"          # baseline | lora | pretrained
 EXP4_WINNER="${EXP4_WINNER:-}"    # e.g. r8_e1_lr5e-5  (cell name under exp4/results/)
 MAX_ROUNDS="${MAX_ROUNDS:-3}"
-GEN_MAX_TOKENS="${GEN_MAX_TOKENS:-12288}"
-CUMULATIVE_TOKEN_CAP="${CUMULATIVE_TOKEN_CAP:-22528}"
+GEN_MAX_TOKENS="${GEN_MAX_TOKENS:-10240}"
+CUMULATIVE_TOKEN_CAP="${CUMULATIVE_TOKEN_CAP:-30720}"
 TRACES_PATH="${TRACES_PATH:-$EXP5_DIR/outputs/injection_traces.jsonl}"
 
 # ── Stage 3 dataset ──────────────────────────────────────────────────────────

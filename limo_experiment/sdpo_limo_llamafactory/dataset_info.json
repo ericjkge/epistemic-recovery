@@ -8,5 +8,15 @@
       "response": "output",
       "system": "system"
     }
+  },
+  "onpolicy_injection": {
+    "file_name": "experiments/experiment5/outputs/onpolicy_injection_dataset.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
   }
 }

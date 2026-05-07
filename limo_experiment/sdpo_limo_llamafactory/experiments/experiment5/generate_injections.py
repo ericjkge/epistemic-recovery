@@ -129,10 +129,11 @@ def render_continuation_prompt(tokenizer, question: str, prior_with_injection: s
     base = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True, enable_thinking=True
     )
-    # The Qwen3 thinking-mode chat template already inserts an opening <think>\n
-    # right after `<|im_start|>assistant\n`. Avoid duplicating it.
+    # Older Qwen3 chat-template versions auto-injected `<think>\n` immediately
+    # after `<|im_start|>assistant\n`; current versions don't (the model emits
+    # `<think>` itself in thinking mode). This de-dup branch is harmlessly inert
+    # on current templates but kept defensive for older transformers caches.
     if base.rstrip().endswith(_THINK_OPEN) and prior_with_injection.startswith(_THINK_OPEN):
-        # Drop the duplicate opener from the prior content.
         prior_with_injection = prior_with_injection[len(_THINK_OPEN):].lstrip("\n")
     return base + prior_with_injection
 
@@ -150,7 +151,7 @@ def load_model(model_path: str, adapter_path: Optional[str], max_model_len: int,
         gpu_memory_utilization=gpu_mem_util,
         max_model_len=max_model_len,
         dtype="bfloat16",
-        enforce_eager=True,
+        enforce_eager=False,
     )
     lora_request = None
     if adapter_path:
@@ -159,13 +160,16 @@ def load_model(model_path: str, adapter_path: Optional[str], max_model_len: int,
     return LLM(**kwargs), lora_request
 
 
-def generate_one(llm, lora_request, prompt: str, sampling_params):
+def generate_batch(llm, lora_request, prompts: list[str], sampling_params):
+    """Submit all prompts in a single vLLM call so the scheduler can pack them
+    onto the GPU concurrently. Returns a list of (text, n_tokens) in input order.
+    Single-call batching is the whole point of using vLLM — calling once per
+    prompt throws away ~10x throughput on H100."""
     gen_kwargs = {}
     if lora_request is not None:
         gen_kwargs["lora_request"] = lora_request
-    out = llm.generate([prompt], sampling_params, use_tqdm=False, **gen_kwargs)[0]
-    completion = out.outputs[0]
-    return completion.text, len(completion.token_ids)
+    outs = llm.generate(prompts, sampling_params, use_tqdm=False, **gen_kwargs)
+    return [(o.outputs[0].text, len(o.outputs[0].token_ids)) for o in outs]
 
 
 # ── Main loop ────────────────────────────────────────────────────────────────
@@ -186,17 +190,21 @@ def main():
                     help="Merged base+adapter checkpoint dir for --model lora "
                          "(workaround for vLLM LoRA crashes; same path as eval.sh's MERGED_DIR).")
     ap.add_argument("--max_rounds", type=int, default=3)
-    ap.add_argument("--max_tokens", type=int, default=12288,
-                    help="Per-round max new tokens. Lower than evaluate_aime's 24K so 3 "
-                         "rounds fit under the training cutoff_len.")
-    ap.add_argument("--cumulative_token_cap", type=int, default=22528,
-                    help="Hard cap on total response length (sum of all rounds). Once "
+    ap.add_argument("--max_tokens", type=int, default=10240,
+                    help="Per-round max new tokens. 3 rounds × 10,240 = 30,720, sized to "
+                         "match LIMO-v2's p99 (~31K) under the 32K SFT cutoff_len.")
+    ap.add_argument("--cumulative_token_cap", type=int, default=30720,
+                    help="Hard cap on total response length (sum of all rounds, generated "
+                         "tokens only — excludes prompt and injection-phrase tokens). Once "
                          "exceeded, no further injections.")
     ap.add_argument("--temperature", type=float, default=0.6)
     ap.add_argument("--top_p", type=float, default=0.95)
     ap.add_argument("--top_k", type=int, default=20)
     ap.add_argument("--frequency_penalty", type=float, default=0.0)
-    ap.add_argument("--max_model_len", type=int, default=28672)
+    ap.add_argument("--max_model_len", type=int, default=32768,
+                    help="Qwen3-8B native context. Must hold prompt + accumulated prior "
+                         "rounds + current round's max_tokens; at round 3 worst case this "
+                         "is ~250 + 20,480 + 26 + 10,240 ≈ 31K, so 32K is the right size.")
     ap.add_argument("--gpu_memory_utilization", type=float, default=0.90)
     ap.add_argument("--tensor_parallel_size", type=int, default=1)
     ap.add_argument("--max_problems", type=int, default=0,
@@ -263,85 +271,112 @@ def main():
         seed=args.seed,
     )
 
-    # ── Round-by-round driver ──────────────────────────────────────────────
-    round_correct = [0] * args.max_rounds         # cumulative correct after round k
-    n_processed = 0
+    # ── Per-round, batched driver ──────────────────────────────────────────
+    # Outer loop is over rounds, not problems: every active problem's prompt
+    # for round k is submitted to vLLM in a single batched call. Problems that
+    # answer correctly (or hit the cumulative-token cap) drop out before
+    # round k+1, so subsequent rounds only spend compute on the still-failing
+    # subset. This is the throughput shape vLLM is designed for.
+    state: dict[str, dict] = {
+        prob["problem_id"]: {
+            "prob": prob,
+            "gt": int(prob["answer"]),
+            "rounds": [],
+            "cumulative_tokens": 0,
+            "final_correct": False,
+            "current_text": "",
+            "reopened": "",          # set on rounds k>0; needed to reconstruct full trace
+            "done": False,
+        }
+        for prob in seeds
+    }
+    round_correct = [0] * args.max_rounds  # cumulative correct after round k
     t0 = time.time()
 
+    for round_idx in range(args.max_rounds):
+        active_ids = [pid for pid, s in state.items() if not s["done"]]
+        if not active_ids:
+            break
+
+        # Build prompts for all active problems
+        prompts = []
+        for pid in active_ids:
+            s = state[pid]
+            question = s["prob"]["question"]
+            if round_idx == 0:
+                prompts.append(render_initial_prompt(tokenizer, question))
+            else:
+                s["reopened"] = reopen_thinking(s["current_text"])
+                prompts.append(render_continuation_prompt(tokenizer, question, s["reopened"]))
+
+        t_round = time.time()
+        print(
+            f"  [round {round_idx + 1}/{args.max_rounds}]  submitting "
+            f"{len(prompts)} prompts to vLLM…",
+            flush=True,
+        )
+        results = generate_batch(llm, lora_request, prompts, sp)
+        round_secs = time.time() - t_round
+
+        # Process results, mark problems done as appropriate
+        n_correct_this_round = 0
+        n_capped_this_round = 0
+        for pid, (gen_text, gen_tokens) in zip(active_ids, results):
+            s = state[pid]
+            # Reconstruct full assistant text. vLLM only returns the new tokens;
+            # for continuation prompts (round > 0) we prepend the reopened
+            # prior so the trace contains the whole multi-round thinking.
+            if round_idx == 0:
+                s["current_text"] = gen_text
+            else:
+                s["current_text"] = s["reopened"] + gen_text
+
+            s["cumulative_tokens"] += gen_tokens
+            extracted = extract_last_boxed(s["current_text"])
+            correct = grade_int(extracted, s["gt"])
+            s["rounds"].append({
+                "round": round_idx + 1,
+                "new_tokens": gen_tokens,
+                "extracted_answer": extracted,
+                "correct": correct,
+            })
+
+            if correct:
+                s["final_correct"] = True
+                s["done"] = True
+                n_correct_this_round += 1
+                # cumulative-correct counter: this problem also "would have"
+                # been correct at every later round k if we'd kept going.
+                for k in range(round_idx, args.max_rounds):
+                    round_correct[k] += 1
+            elif s["cumulative_tokens"] >= args.cumulative_token_cap:
+                s["done"] = True
+                n_capped_this_round += 1
+
+        elapsed = time.time() - t0
+        print(
+            f"    → +{n_correct_this_round} correct, +{n_capped_this_round} hit token cap, "
+            f"{sum(1 for s in state.values() if not s['done'])} still active.  "
+            f"round_secs={round_secs:.1f}s  total={elapsed:.0f}s",
+            flush=True,
+        )
+
+    # Write traces in original seed order
     with open(traces_path, "w") as outf:
         for prob in seeds:
-            qid = prob["problem_id"]
-            question = prob["question"]
-            gt = int(prob["answer"])
-
-            rounds: list[dict] = []
-            cumulative_tokens = 0
-            final_correct = False
-            current_text = ""
-
-            for round_idx in range(args.max_rounds):
-                if round_idx == 0:
-                    prompt = render_initial_prompt(tokenizer, question)
-                else:
-                    reopened = reopen_thinking(current_text)
-                    prompt = render_continuation_prompt(tokenizer, question, reopened)
-
-                gen_text, gen_tokens = generate_one(llm, lora_request, prompt, sp)
-
-                # The text returned by vLLM is just the new tokens. For a
-                # continuation prompt, we want the FULL assistant message
-                # (prior thoughts + injection + new generation) so the dataset
-                # builder has the whole trace.
-                if round_idx == 0:
-                    current_text = gen_text
-                else:
-                    current_text = reopened + gen_text
-
-                cumulative_tokens += gen_tokens
-                extracted = extract_last_boxed(current_text)
-                correct = grade_int(extracted, gt)
-
-                rounds.append({
-                    "round": round_idx + 1,
-                    "new_tokens": gen_tokens,
-                    "extracted_answer": extracted,
-                    "correct": correct,
-                })
-
-                if correct:
-                    for k in range(round_idx, args.max_rounds):
-                        round_correct[k] += 1
-                    final_correct = True
-                    break
-                if cumulative_tokens >= args.cumulative_token_cap:
-                    break
-
+            s = state[prob["problem_id"]]
             outf.write(json.dumps({
-                "problem_id": qid,
-                "question": question,
-                "ground_truth": gt,
-                "rounds": rounds,
-                "final_correct": final_correct,
-                "final_round": rounds[-1]["round"] if rounds else 0,
-                "cumulative_tokens": cumulative_tokens,
-                "final_text": current_text,
+                "problem_id": prob["problem_id"],
+                "question": prob["question"],
+                "ground_truth": s["gt"],
+                "rounds": s["rounds"],
+                "final_correct": s["final_correct"],
+                "final_round": s["rounds"][-1]["round"] if s["rounds"] else 0,
+                "cumulative_tokens": s["cumulative_tokens"],
+                "final_text": s["current_text"],
             }, ensure_ascii=False) + "\n")
-            outf.flush()
 
-            n_processed += 1
-            elapsed = time.time() - t0
-            r1 = round_correct[0] / n_processed
-            rN = sum(1 for k in range(args.max_rounds) if round_correct[k]) and (
-                round_correct[args.max_rounds - 1] / n_processed
-            )
-            print(
-                f"  [{n_processed:>3}/{len(seeds)}] {qid}  "
-                f"final_correct={final_correct}  "
-                f"final_round={rounds[-1]['round'] if rounds else 0}  "
-                f"R1={r1:.3f}  R{args.max_rounds}={rN:.3f}  "
-                f"elapsed={elapsed:.0f}s",
-                flush=True,
-            )
+    n_processed = len(seeds)
 
     # ── Stats ──────────────────────────────────────────────────────────────
     stats = {

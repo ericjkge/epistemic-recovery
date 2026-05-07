@@ -156,10 +156,16 @@ RANK=8 EPOCHS=1.0 LR=5e-5 bash train.sh
   think again.\n\n"`. s1 just used `"Wait"`. The longer phrase is unambiguous
   but signals "this was graded" more strongly than s1's open-ended hedge —
   worth ablating once the pipeline works.
-- **Cap on cumulative tokens.** Without a cap, three rounds × `max_tokens=24K`
-  = 72K tokens per problem, far exceeding `cutoff_len=16384` from
-  `qwen3_sdpo_lora_sft.yaml`. We cap at 22K cumulative tokens in
-  `generate_injections.py` so traces fit the training context.
+- **Cap on cumulative tokens.** We cap at 30,720 cumulative generated tokens
+  (3 rounds × 10,240 per-round `max_tokens`) in `generate_injections.py`,
+  matching `cutoff_len=32768` in `qwen3_sdpo_lora_sft.yaml` (Qwen3-8B's native
+  context). This sizes the trace distribution to LIMO-v2's p99 (~31K tokens) so
+  the verbose, epistemically-marked tail isn't systematically clipped — the
+  whole point of experiment 5 is to match LIMO's reasoning length.
+  `cumulative_token_cap` counts only generated tokens (excludes the prompt and
+  the ~13-token injection phrases, which feed into the next round's prompt
+  rather than being generated). Round 3 worst-case vLLM context use is ~31K,
+  inside `max_model_len=32768`.
 - **Risk of "self-fulfilling" injection.** If the model learns that
   "Wait, the answer is wrong. ..." always precedes a correct answer in
   training data, it may emit the phrase liberally at inference and skip
