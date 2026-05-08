@@ -36,6 +36,7 @@ SEEDS_PATH="${SEEDS_PATH:-$EXP5_DIR/seed_problems.jsonl}"
 POLICY="${POLICY:-lora}"          # baseline | lora | pretrained
 EXP4_WINNER="${EXP4_WINNER:-}"    # e.g. r8_e1_lr5e-5  (cell name under exp4/results/)
 MAX_ROUNDS="${MAX_ROUNDS:-3}"
+NUM_CHAINS="${NUM_CHAINS:-4}"     # pass@K: K independent injection chains per problem
 GEN_MAX_TOKENS="${GEN_MAX_TOKENS:-10240}"
 CUMULATIVE_TOKEN_CAP="${CUMULATIVE_TOKEN_CAP:-30720}"
 TRACES_PATH="${TRACES_PATH:-$EXP5_DIR/outputs/injection_traces.jsonl}"
@@ -148,6 +149,7 @@ else
         --seeds "$SEEDS_PATH" \
         --output_dir "$EXP5_DIR/outputs" \
         --model "$POLICY" \
+        --num_chains "$NUM_CHAINS" \
         --max_rounds "$MAX_ROUNDS" \
         --max_tokens "$GEN_MAX_TOKENS" \
         --cumulative_token_cap "$CUMULATIVE_TOKEN_CAP" \

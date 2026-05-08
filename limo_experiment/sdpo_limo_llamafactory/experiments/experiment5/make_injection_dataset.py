@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Convert injection_traces.jsonl into a LlamaFactory alpaca-format SFT dataset.
 
+Handles both single-chain (legacy) and multi-chain (pass@K) trace formats.
+For multi-chain traces, emits ONE dataset row per correct chain (so a
+problem solved by 3-of-4 chains contributes 3 rows). This intentionally
+oversamples problems the policy can solve in multiple ways — they're all
+real on-policy traces and the diversity is useful SFT signal.
+
 Mirrors make_limo_dataset.py's wrapping convention so the trained LoRA's
 inference distribution matches Qwen3 thinking-mode output:
 
@@ -11,9 +17,9 @@ injection markers preserved, minus the final "</think>...\\boxed{N}" suffix
 (which we re-emit cleanly). That way the trained model sees retries as part
 of natural reasoning, not as a special token sequence.
 
-Filtering: only problems with `final_correct=True`. (Dropping wrong-final
-problems is cheap and keeps the SFT signal clean — there are no negative-
-example training objectives wired up here.)
+Filtering: only chains with `final_correct=True`. (Dropping wrong chains
+is cheap and keeps the SFT signal clean — there are no negative-example
+training objectives wired up here.)
 
 Usage:
     python3 make_injection_dataset.py \\
@@ -97,7 +103,9 @@ def main():
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    n_total = n_kept = n_dropped_wrong = n_dropped_no_box = n_dropped_long = 0
+    n_problems = 0
+    n_problems_any_correct = 0
+    n_chains_total = n_kept = n_dropped_wrong = n_dropped_no_box = n_dropped_long = 0
     n_round1_only = 0
     records = []
 
@@ -106,54 +114,80 @@ def main():
             line = line.strip()
             if not line:
                 continue
-            n_total += 1
             rec = json.loads(line)
+            n_problems += 1
 
-            if not rec.get("final_correct"):
-                n_dropped_wrong += 1
-                continue
+            # Two record shapes:
+            #   Multi-chain (pass@K): top-level `chains` array with per-chain
+            #     {final_correct, final_round, final_text, rounds}.
+            #   Single-chain (legacy): top-level `final_correct`, `final_text`,
+            #     `final_round`, `rounds`. We synthesize a 1-element chains list.
+            if "chains" in rec:
+                chain_records = rec["chains"]
+            else:
+                chain_records = [{
+                    "chain_idx": 0,
+                    "final_correct": rec.get("final_correct", False),
+                    "final_round": rec.get("final_round", len(rec.get("rounds", []))),
+                    "final_text": rec.get("final_text", ""),
+                    "rounds": rec.get("rounds", []),
+                }]
 
-            n_rounds = rec.get("final_round", len(rec.get("rounds", [])))
-            if n_rounds == 1:
-                n_round1_only += 1
-                if args.require_injection:
+            problem_any_correct = False
+            for chain in chain_records:
+                n_chains_total += 1
+
+                if not chain.get("final_correct"):
+                    n_dropped_wrong += 1
+                    continue
+                problem_any_correct = True
+
+                n_rounds = chain.get("final_round", len(chain.get("rounds", [])))
+                if n_rounds == 1:
+                    n_round1_only += 1
+                    if args.require_injection:
+                        continue
+
+                text = chain["final_text"]
+                thinking, _post = split_think(text)
+                inner_box = extract_last_boxed_inner(text)
+                if inner_box is None:
+                    n_dropped_no_box += 1
                     continue
 
-            text = rec["final_text"]
-            thinking, _post = split_think(text)
-            inner_box = extract_last_boxed_inner(text)
-            if inner_box is None:
-                n_dropped_no_box += 1
-                continue
+                # Use the GROUND TRUTH integer in the boxed answer — `final_correct`
+                # already verified the model's extracted answer matches GT, so this
+                # just normalizes formatting (e.g. "042" → "42").
+                answer_str = str(int(rec["ground_truth"]))
 
-            # Use the GROUND TRUTH integer in the boxed answer — `final_correct`
-            # already verified the model's extracted answer matches GT, so this
-            # just normalizes formatting (e.g. "042" → "42").
-            answer_str = str(int(rec["ground_truth"]))
+                output = build_assistant_output(thinking, answer_str)
+                if len(output) > args.max_chars:
+                    n_dropped_long += 1
+                    continue
 
-            output = build_assistant_output(thinking, answer_str)
-            if len(output) > args.max_chars:
-                n_dropped_long += 1
-                continue
+                records.append({
+                    "instruction": rec["question"],
+                    "input": "",
+                    "output": output,
+                    "system": SYSTEM_PROMPT,
+                })
+                n_kept += 1
 
-            records.append({
-                "instruction": rec["question"],
-                "input": "",
-                "output": output,
-                "system": SYSTEM_PROMPT,
-            })
-            n_kept += 1
+            if problem_any_correct:
+                n_problems_any_correct += 1
 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(records, f, indent=2, ensure_ascii=False)
 
-    print(f"  source           {traces_path}")
-    print(f"  total traces     {n_total}")
-    print(f"  kept             {n_kept}")
-    print(f"    round-1 only   {n_round1_only}{' (excluded by --require_injection)' if args.require_injection else ''}")
-    print(f"  dropped (wrong)  {n_dropped_wrong}")
-    print(f"  dropped (no \\boxed) {n_dropped_no_box}")
-    print(f"  dropped (>{args.max_chars} chars) {n_dropped_long}")
+    print(f"  source                  {traces_path}")
+    print(f"  total problems          {n_problems}")
+    print(f"  problems with any-correct chain  {n_problems_any_correct}")
+    print(f"  total chains            {n_chains_total}")
+    print(f"  kept rows               {n_kept}")
+    print(f"    round-1 only          {n_round1_only}{' (excluded by --require_injection)' if args.require_injection else ''}")
+    print(f"  dropped (wrong chain)   {n_dropped_wrong}")
+    print(f"  dropped (no \\boxed)    {n_dropped_no_box}")
+    print(f"  dropped (>{args.max_chars} chars)  {n_dropped_long}")
     print(f"  → {out_path}")
 
 

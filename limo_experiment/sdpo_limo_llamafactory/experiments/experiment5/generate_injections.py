@@ -1,29 +1,32 @@
 #!/usr/bin/env python3
-"""Iterative-injection generator for on-policy reasoning traces.
+"""Iterative-injection generator for on-policy reasoning traces (pass@K variant).
 
-For each seed problem:
+For each seed problem, run K independent injection chains in parallel:
   Round 1:
-    - sample a response (Qwen3 thinking-mode chat template + boxed-answer system msg)
-    - extract last \\boxed{...}, grade against integer GT
-    - if correct → record, done
+    - sample K responses from the same initial prompt (vLLM n=K)
+    - for each chain: extract last \\boxed{...}, grade against integer GT
+    - chains that grade correct are done; the others advance to round 2
   Round k > 1:
-    - take the prior round's text
-    - strip everything from the LAST `</think>` (or after the last `\\boxed{}` if
-      no `</think>`) so we re-enter thinking mode
-    - append injection phrase " Wait, the answer is wrong. Let's think again.\\n\\n"
-    - resample as a *continuation* of the assistant turn (vLLM raw-prompt mode)
-    - grade; loop until correct OR max_rounds OR cumulative tokens > token_cap
+    - for each *still-active* (problem, chain) pair, take that chain's prior
+      text, strip everything from the LAST `</think>` (or after the last
+      `\\boxed{}` if no `</think>`) so we re-enter thinking mode, append the
+      injection phrase, and resample as a continuation (n=1, raw-prompt mode)
+    - grade; chain done if correct OR cumulative tokens > token_cap
 
-Output: outputs/injection_traces.jsonl, one record per problem with all rounds and
-final correctness. outputs/stats.json reports the round-by-round pass curve.
+Pass@K at round k = fraction of problems where ANY chain is correct by round k
+(matches `evaluate_aime.py`'s any_correct_rate semantics).
 
-Backends: vLLM only — the same setup evaluate_aime.py uses. Designed to run on the
-same H100 instance.
+Output: outputs/injection_traces.jsonl, one record per problem with all K chains'
+rounds and final correctness. outputs/stats.json reports the round-by-round
+pass@K curve and the per-chain pass@1 average for context.
+
+Backends: vLLM only — same setup as evaluate_aime.py.
 
 Run from sdpo_limo_llamafactory/ (or anywhere — paths are absolute):
     python3 experiments/experiment5/generate_injections.py \\
         --seeds experiments/experiment5/seed_problems.jsonl \\
         --output_dir experiments/experiment5/outputs \\
+        --num_chains 4 \\
         --model lora                                # or 'baseline' / 'pretrained'
 """
 import argparse
@@ -162,14 +165,14 @@ def load_model(model_path: str, adapter_path: Optional[str], max_model_len: int,
 
 def generate_batch(llm, lora_request, prompts: list[str], sampling_params):
     """Submit all prompts in a single vLLM call so the scheduler can pack them
-    onto the GPU concurrently. Returns a list of (text, n_tokens) in input order.
+    onto the GPU concurrently. Returns the raw RequestOutput list in input
+    order — caller decides whether to read one or many outputs per prompt.
     Single-call batching is the whole point of using vLLM — calling once per
     prompt throws away ~10x throughput on H100."""
     gen_kwargs = {}
     if lora_request is not None:
         gen_kwargs["lora_request"] = lora_request
-    outs = llm.generate(prompts, sampling_params, use_tqdm=False, **gen_kwargs)
-    return [(o.outputs[0].text, len(o.outputs[0].token_ids)) for o in outs]
+    return llm.generate(prompts, sampling_params, use_tqdm=False, **gen_kwargs)
 
 
 # ── Main loop ────────────────────────────────────────────────────────────────
@@ -189,14 +192,18 @@ def main():
     ap.add_argument("--merged", default=None,
                     help="Merged base+adapter checkpoint dir for --model lora "
                          "(workaround for vLLM LoRA crashes; same path as eval.sh's MERGED_DIR).")
+    ap.add_argument("--num_chains", type=int, default=4,
+                    help="Number of independent injection chains per problem (pass@K). "
+                         "Round 1 samples this many candidates per problem in one vLLM call "
+                         "(n=K); rounds 2+ each chain independently inject-and-retries.")
     ap.add_argument("--max_rounds", type=int, default=3)
     ap.add_argument("--max_tokens", type=int, default=10240,
                     help="Per-round max new tokens. 3 rounds × 10,240 = 30,720, sized to "
                          "match LIMO-v2's p99 (~31K) under the 32K SFT cutoff_len.")
     ap.add_argument("--cumulative_token_cap", type=int, default=30720,
-                    help="Hard cap on total response length (sum of all rounds, generated "
-                         "tokens only — excludes prompt and injection-phrase tokens). Once "
-                         "exceeded, no further injections.")
+                    help="Hard cap on total response length per chain (sum of all rounds, "
+                         "generated tokens only — excludes prompt and injection-phrase tokens). "
+                         "Once exceeded, that chain stops; other chains continue.")
     ap.add_argument("--temperature", type=float, default=0.6)
     ap.add_argument("--top_p", type=float, default=0.95)
     ap.add_argument("--top_k", type=int, default=20)
@@ -211,6 +218,9 @@ def main():
                     help="If >0, only the first N seeds are processed.")
     ap.add_argument("--seed", type=int, default=42, help="vLLM sampling seed.")
     args = ap.parse_args()
+
+    if args.num_chains < 1:
+        raise SystemExit("--num_chains must be >= 1")
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -247,7 +257,8 @@ def main():
                 seeds.append(json.loads(line))
     if args.max_problems > 0:
         seeds = seeds[: args.max_problems]
-    print(f"  seeds: {len(seeds)} from {args.seeds}")
+    K = args.num_chains
+    print(f"  seeds: {len(seeds)} from {args.seeds}   chains/problem: {K}")
 
     # ── Load tokenizer + model ─────────────────────────────────────────────
     from transformers import AutoTokenizer
@@ -261,7 +272,18 @@ def main():
         tensor_parallel=args.tensor_parallel_size,
     )
 
-    sp = SamplingParams(
+    # Round 1 uses n=K to fan out per problem; rounds 2+ use n=1 because each
+    # chain has diverged into its own continuation prompt.
+    sp_round1 = SamplingParams(
+        n=K,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
+        max_tokens=args.max_tokens,
+        frequency_penalty=args.frequency_penalty,
+        seed=args.seed,
+    )
+    sp_continuation = SamplingParams(
         n=1,
         temperature=args.temperature,
         top_p=args.top_p,
@@ -272,118 +294,199 @@ def main():
     )
 
     # ── Per-round, batched driver ──────────────────────────────────────────
-    # Outer loop is over rounds, not problems: every active problem's prompt
-    # for round k is submitted to vLLM in a single batched call. Problems that
-    # answer correctly (or hit the cumulative-token cap) drop out before
-    # round k+1, so subsequent rounds only spend compute on the still-failing
-    # subset. This is the throughput shape vLLM is designed for.
-    state: dict[str, dict] = {
-        prob["problem_id"]: {
-            "prob": prob,
-            "gt": int(prob["answer"]),
-            "rounds": [],
-            "cumulative_tokens": 0,
-            "final_correct": False,
-            "current_text": "",
-            "reopened": "",          # set on rounds k>0; needed to reconstruct full trace
-            "done": False,
-        }
-        for prob in seeds
-    }
-    round_correct = [0] * args.max_rounds  # cumulative correct after round k
+    # Outer loop is over rounds, not (problem, chain) pairs: every active
+    # chain's prompt for round k is submitted to vLLM in a single batched call.
+    # Chains that answer correctly (or hit the cumulative-token cap) drop out
+    # before round k+1, so subsequent rounds only spend compute on the
+    # still-failing subset. This is the throughput shape vLLM is designed for.
+    chains: dict[tuple[str, int], dict] = {}
+    for prob in seeds:
+        for c in range(K):
+            chains[(prob["problem_id"], c)] = {
+                "prob": prob,
+                "gt": int(prob["answer"]),
+                "chain_idx": c,
+                "rounds": [],
+                "cumulative_tokens": 0,
+                "final_correct": False,
+                "current_text": "",
+                "reopened": "",
+                "done": False,
+            }
+
+    # Pass@K tracking: round_correct[k] = number of problems where >=1 chain
+    # is correct by the end of round k+1. Chain-level cumulative also tracked
+    # for diagnosis (mean per-chain pass@1 per round).
+    round_correct_passK = [0] * args.max_rounds
+    round_correct_chains = [0] * args.max_rounds
     t0 = time.time()
 
     for round_idx in range(args.max_rounds):
-        active_ids = [pid for pid, s in state.items() if not s["done"]]
-        if not active_ids:
-            break
+        if round_idx == 0:
+            # Round 1: one prompt per problem, n=K outputs each.
+            active_problems = seeds
+            prompts = [
+                render_initial_prompt(tokenizer, prob["question"])
+                for prob in active_problems
+            ]
+            t_round = time.time()
+            print(
+                f"  [round {round_idx + 1}/{args.max_rounds}]  submitting "
+                f"{len(prompts)} prompts × n={K} = {len(prompts) * K} chains to vLLM…",
+                flush=True,
+            )
+            outs = generate_batch(llm, lora_request, prompts, sp_round1)
+            round_secs = time.time() - t_round
 
-        # Build prompts for all active problems
-        prompts = []
-        for pid in active_ids:
-            s = state[pid]
-            question = s["prob"]["question"]
-            if round_idx == 0:
-                prompts.append(render_initial_prompt(tokenizer, question))
-            else:
+            n_chains_correct = 0
+            n_chains_capped = 0
+            for prob, comp in zip(active_problems, outs):
+                # vLLM may not preserve order across the K outputs; treat them
+                # as an unordered set (chain identity is post-hoc — assign in
+                # whatever order vLLM returns them).
+                for c, oc in enumerate(comp.outputs[:K]):
+                    chain = chains[(prob["problem_id"], c)]
+                    gen_text = oc.text
+                    gen_tokens = len(oc.token_ids)
+                    chain["current_text"] = gen_text
+                    chain["cumulative_tokens"] += gen_tokens
+                    extracted = extract_last_boxed(gen_text)
+                    correct = grade_int(extracted, chain["gt"])
+                    chain["rounds"].append({
+                        "round": round_idx + 1,
+                        "new_tokens": gen_tokens,
+                        "extracted_answer": extracted,
+                        "correct": correct,
+                    })
+                    if correct:
+                        chain["final_correct"] = True
+                        chain["done"] = True
+                        n_chains_correct += 1
+                    elif chain["cumulative_tokens"] >= args.cumulative_token_cap:
+                        chain["done"] = True
+                        n_chains_capped += 1
+        else:
+            # Rounds 2+: one prompt per active chain (n=1).
+            active_keys = [k for k, s in chains.items() if not s["done"]]
+            if not active_keys:
+                # Backfill remaining round counters with the current cumulative
+                # state — pass@K and per-chain pass@1 plateau once everything
+                # is done, but the vector should still have max_rounds entries.
+                for k in range(round_idx, args.max_rounds):
+                    round_correct_passK[k] = round_correct_passK[round_idx - 1]
+                    round_correct_chains[k] = round_correct_chains[round_idx - 1]
+                break
+
+            prompts = []
+            for key in active_keys:
+                s = chains[key]
                 s["reopened"] = reopen_thinking(s["current_text"])
+                question = s["prob"]["question"]
                 prompts.append(render_continuation_prompt(tokenizer, question, s["reopened"]))
 
-        t_round = time.time()
-        print(
-            f"  [round {round_idx + 1}/{args.max_rounds}]  submitting "
-            f"{len(prompts)} prompts to vLLM…",
-            flush=True,
-        )
-        results = generate_batch(llm, lora_request, prompts, sp)
-        round_secs = time.time() - t_round
+            t_round = time.time()
+            print(
+                f"  [round {round_idx + 1}/{args.max_rounds}]  submitting "
+                f"{len(prompts)} active-chain prompts to vLLM…",
+                flush=True,
+            )
+            outs = generate_batch(llm, lora_request, prompts, sp_continuation)
+            round_secs = time.time() - t_round
 
-        # Process results, mark problems done as appropriate
-        n_correct_this_round = 0
-        n_capped_this_round = 0
-        for pid, (gen_text, gen_tokens) in zip(active_ids, results):
-            s = state[pid]
-            # Reconstruct full assistant text. vLLM only returns the new tokens;
-            # for continuation prompts (round > 0) we prepend the reopened
-            # prior so the trace contains the whole multi-round thinking.
-            if round_idx == 0:
-                s["current_text"] = gen_text
-            else:
+            n_chains_correct = 0
+            n_chains_capped = 0
+            for key, comp in zip(active_keys, outs):
+                s = chains[key]
+                oc = comp.outputs[0]
+                gen_text = oc.text
+                gen_tokens = len(oc.token_ids)
+                # Reconstruct full assistant text for this chain. vLLM only
+                # returns the new tokens; for continuation prompts we prepend
+                # the reopened prior so the trace contains the whole multi-
+                # round thinking.
                 s["current_text"] = s["reopened"] + gen_text
+                s["cumulative_tokens"] += gen_tokens
+                extracted = extract_last_boxed(s["current_text"])
+                correct = grade_int(extracted, s["gt"])
+                s["rounds"].append({
+                    "round": round_idx + 1,
+                    "new_tokens": gen_tokens,
+                    "extracted_answer": extracted,
+                    "correct": correct,
+                })
+                if correct:
+                    s["final_correct"] = True
+                    s["done"] = True
+                    n_chains_correct += 1
+                elif s["cumulative_tokens"] >= args.cumulative_token_cap:
+                    s["done"] = True
+                    n_chains_capped += 1
 
-            s["cumulative_tokens"] += gen_tokens
-            extracted = extract_last_boxed(s["current_text"])
-            correct = grade_int(extracted, s["gt"])
-            s["rounds"].append({
-                "round": round_idx + 1,
-                "new_tokens": gen_tokens,
-                "extracted_answer": extracted,
-                "correct": correct,
-            })
-
-            if correct:
-                s["final_correct"] = True
-                s["done"] = True
-                n_correct_this_round += 1
-                # cumulative-correct counter: this problem also "would have"
-                # been correct at every later round k if we'd kept going.
-                for k in range(round_idx, args.max_rounds):
-                    round_correct[k] += 1
-            elif s["cumulative_tokens"] >= args.cumulative_token_cap:
-                s["done"] = True
-                n_capped_this_round += 1
-
+        # End-of-round accounting
+        round_correct_chains[round_idx] = sum(
+            1 for s in chains.values() if s["final_correct"]
+        )
+        round_correct_passK[round_idx] = sum(
+            1
+            for prob in seeds
+            if any(chains[(prob["problem_id"], c)]["final_correct"] for c in range(K))
+        )
+        active_chains_remaining = sum(1 for s in chains.values() if not s["done"])
         elapsed = time.time() - t0
         print(
-            f"    → +{n_correct_this_round} correct, +{n_capped_this_round} hit token cap, "
-            f"{sum(1 for s in state.values() if not s['done'])} still active.  "
+            f"    → +{n_chains_correct} chains correct, +{n_chains_capped} hit token cap, "
+            f"{active_chains_remaining} chains still active.  "
+            f"pass@{K}={round_correct_passK[round_idx]}/{len(seeds)}  "
+            f"chain pass@1 cum={round_correct_chains[round_idx]}/{len(seeds) * K}  "
             f"round_secs={round_secs:.1f}s  total={elapsed:.0f}s",
             flush=True,
         )
 
-    # Write traces in original seed order
+    # Write traces in original seed order; one record per problem with K chains.
     with open(traces_path, "w") as outf:
         for prob in seeds:
-            s = state[prob["problem_id"]]
+            chain_records = []
+            for c in range(K):
+                s = chains[(prob["problem_id"], c)]
+                chain_records.append({
+                    "chain_idx": c,
+                    "rounds": s["rounds"],
+                    "final_correct": s["final_correct"],
+                    "final_round": s["rounds"][-1]["round"] if s["rounds"] else 0,
+                    "cumulative_tokens": s["cumulative_tokens"],
+                    "final_text": s["current_text"],
+                })
+            any_correct = any(cr["final_correct"] for cr in chain_records)
+            min_correct_round = min(
+                (cr["final_round"] for cr in chain_records if cr["final_correct"]),
+                default=0,
+            )
             outf.write(json.dumps({
                 "problem_id": prob["problem_id"],
                 "question": prob["question"],
-                "ground_truth": s["gt"],
-                "rounds": s["rounds"],
-                "final_correct": s["final_correct"],
-                "final_round": s["rounds"][-1]["round"] if s["rounds"] else 0,
-                "cumulative_tokens": s["cumulative_tokens"],
-                "final_text": s["current_text"],
+                "ground_truth": int(prob["answer"]),
+                "num_chains": K,
+                "chains": chain_records,
+                "any_correct": any_correct,
+                "min_correct_round": min_correct_round,
             }, ensure_ascii=False) + "\n")
 
     n_processed = len(seeds)
+    n_chains_total = n_processed * K
 
     # ── Stats ──────────────────────────────────────────────────────────────
     stats = {
         "n_problems": n_processed,
+        "num_chains": K,
         "max_rounds": args.max_rounds,
-        "round_pass_rate": [round_correct[k] / n_processed for k in range(args.max_rounds)] if n_processed else [],
-        "round_correct": round_correct,
+        f"pass_at_{K}_round_rate": [
+            round_correct_passK[k] / n_processed for k in range(args.max_rounds)
+        ] if n_processed else [],
+        f"pass_at_{K}_round_correct": round_correct_passK,
+        "chain_pass_at_1_round_rate": [
+            round_correct_chains[k] / n_chains_total for k in range(args.max_rounds)
+        ] if n_chains_total else [],
+        "chain_pass_at_1_round_correct": round_correct_chains,
         "model": args.model,
         "adapter": adapter_path,
         "merged": args.merged if args.model == "lora" else None,
@@ -394,7 +497,8 @@ def main():
         json.dump(stats, f, indent=2)
     print(f"\n  → {traces_path}")
     print(f"  → {stats_path}")
-    print(f"  pass-rate by round: {stats['round_pass_rate']}")
+    print(f"  pass@{K} by round: {stats[f'pass_at_{K}_round_rate']}")
+    print(f"  per-chain pass@1 by round: {stats['chain_pass_at_1_round_rate']}")
 
 
 if __name__ == "__main__":

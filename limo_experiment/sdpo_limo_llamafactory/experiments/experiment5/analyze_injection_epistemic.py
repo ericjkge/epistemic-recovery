@@ -82,37 +82,54 @@ def main() -> int:
             if not line:
                 continue
             rec = json.loads(line)
-            final_text = rec["final_text"]
-            n_rounds = len(rec["rounds"])
-            final_correct = rec["final_correct"]
-            if final_correct:
-                bucket = f"R{rec['final_round']}-correct"
+
+            # Multi-chain (pass@K) format has top-level `chains`; legacy
+            # single-chain format puts the trace fields at top level. Treat
+            # each chain as its own row for the per-trace breakdown.
+            if "chains" in rec:
+                chain_iter = rec["chains"]
             else:
-                bucket = "never-correct"
+                chain_iter = [{
+                    "chain_idx": 0,
+                    "rounds": rec.get("rounds", []),
+                    "final_correct": rec.get("final_correct", False),
+                    "final_round": rec.get("final_round", len(rec.get("rounds", []))),
+                    "final_text": rec.get("final_text", ""),
+                }]
 
-            r1_text = split_r1_text(final_text)
-            r1_thinking, _ = extract_thinking_span(r1_text)
-            full_thinking, _ = extract_thinking_span(final_text)
+            for chain in chain_iter:
+                final_text = chain["final_text"]
+                n_rounds = len(chain.get("rounds", []))
+                final_correct = chain["final_correct"]
+                if final_correct:
+                    bucket = f"R{chain['final_round']}-correct"
+                else:
+                    bucket = "never-correct"
 
-            r1_counts = count_tokens(r1_thinking)
-            full_counts = count_tokens(full_thinking)
-            r1_total = sum(r1_counts.values())
-            full_total = sum(full_counts.values())
-            r1_words = thinking_word_count(r1_thinking)
-            full_words = thinking_word_count(full_thinking)
+                r1_text = split_r1_text(final_text)
+                r1_thinking, _ = extract_thinking_span(r1_text)
+                full_thinking, _ = extract_thinking_span(final_text)
 
-            rows.append({
-                "problem_id": rec["problem_id"],
-                "n_rounds": n_rounds,
-                "final_correct": final_correct,
-                "bucket": bucket,
-                "r1_words": r1_words,
-                "full_words": full_words,
-                "r1_total": r1_total,
-                "full_total": full_total,
-                "r1_per_token": r1_counts,
-                "full_per_token": full_counts,
-            })
+                r1_counts = count_tokens(r1_thinking)
+                full_counts = count_tokens(full_thinking)
+                r1_total = sum(r1_counts.values())
+                full_total = sum(full_counts.values())
+                r1_words = thinking_word_count(r1_thinking)
+                full_words = thinking_word_count(full_thinking)
+
+                rows.append({
+                    "problem_id": rec["problem_id"],
+                    "chain_idx": chain.get("chain_idx", 0),
+                    "n_rounds": n_rounds,
+                    "final_correct": final_correct,
+                    "bucket": bucket,
+                    "r1_words": r1_words,
+                    "full_words": full_words,
+                    "r1_total": r1_total,
+                    "full_total": full_total,
+                    "r1_per_token": r1_counts,
+                    "full_per_token": full_counts,
+                })
 
     if not rows:
         print("ERROR: no traces found", file=sys.stderr)
@@ -174,13 +191,13 @@ def main() -> int:
         with open(out, "w") as f:
             w = csv.writer(f)
             w.writerow([
-                "problem_id", "bucket", "n_rounds", "final_correct",
+                "problem_id", "chain_idx", "bucket", "n_rounds", "final_correct",
                 "r1_words", "r1_total", "r1_density",
                 "full_words", "full_total", "full_density",
             ])
             for r in rows:
                 w.writerow([
-                    r["problem_id"], r["bucket"], r["n_rounds"], r["final_correct"],
+                    r["problem_id"], r["chain_idx"], r["bucket"], r["n_rounds"], r["final_correct"],
                     r["r1_words"], r["r1_total"], density(r["r1_total"], r["r1_words"]),
                     r["full_words"], r["full_total"], density(r["full_total"], r["full_words"]),
                 ])

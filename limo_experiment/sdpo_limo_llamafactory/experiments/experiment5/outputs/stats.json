@@ -1,15 +1,26 @@
 {
   "n_problems": 795,
+  "num_chains": 4,
   "max_rounds": 3,
-  "round_pass_rate": [
-    0.43144654088050316,
-    0.5220125786163522,
-    0.5345911949685535
+  "pass_at_4_round_rate": [
+    0.6440251572327044,
+    0.7220125786163522,
+    0.7433962264150943
   ],
-  "round_correct": [
-    343,
-    415,
-    425
+  "pass_at_4_round_correct": [
+    512,
+    574,
+    591
+  ],
+  "chain_pass_at_1_round_rate": [
+    0.4166666666666667,
+    0.5018867924528302,
+    0.5185534591194969
+  ],
+  "chain_pass_at_1_round_correct": [
+    1325,
+    1596,
+    1649
   ],
   "model": "baseline",
   "adapter": null,
@@ -17,10 +28,11 @@
   "model_path": "beanie00/math-SDPO-Qwen3-8B-think-step-100",
   "args": {
     "seeds": "/home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment5/seed_problems.jsonl",
-    "output_dir": "/home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment5/outputs",
+    "output_dir": "experiments/experiment5/outputs",
     "model": "baseline",
     "adapter": null,
     "merged": null,
+    "num_chains": 4,
     "max_rounds": 3,
     "max_tokens": 10240,
     "cumulative_token_cap": 30720,
