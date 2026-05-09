@@ -48,7 +48,17 @@ BASE_MODEL = "beanie00/math-SDPO-Qwen3-8B-think-step-100"
 PRETRAINED = "Qwen/Qwen3-8B"
 
 USER_TEMPLATE = "{question}\n\nPlease reason step by step, and put your final answer within \\boxed{{}}."
-INJECTION_PHRASE = " Wait, the answer is wrong. Let's think again.\n\n"
+INJECTION_PHRASE = " Wait, that might be wrong. Let's try some different approaches.\n\n"
+# Hard cap on the sum of *generated* tokens across rounds for one chain
+# (excludes prompt and injection-phrase tokens). Sized so that when split
+# 16K (R1) + 14720 (R2) the total still fits comfortably under
+# qwen3_sdpo_lora_sft.yaml's cutoff_len=32768. Not a CLI flag — changing it
+# means rethinking the per-round defaults too.
+CUMULATIVE_TOKEN_CAP = 30720
+# The phrase actually used by the current run; --injection_phrase overrides
+# INJECTION_PHRASE without mutating the importable default. reopen_thinking
+# reads this at call time so a CLI override propagates without plumbing.
+_ACTIVE_INJECTION_PHRASE = INJECTION_PHRASE
 
 
 # ── Trace surgery ────────────────────────────────────────────────────────────
@@ -102,7 +112,7 @@ def reopen_thinking(prior: str) -> str:
         # tolerate it). Wrap retroactively.
         reopened = f"{_THINK_OPEN}\n{prior.rstrip()}"
 
-    return reopened + INJECTION_PHRASE
+    return reopened + _ACTIVE_INJECTION_PHRASE
 
 
 # ── Prompting ────────────────────────────────────────────────────────────────
@@ -196,28 +206,45 @@ def main():
                     help="Number of independent injection chains per problem (pass@K). "
                          "Round 1 samples this many candidates per problem in one vLLM call "
                          "(n=K); rounds 2+ each chain independently inject-and-retries.")
-    ap.add_argument("--max_rounds", type=int, default=3)
-    ap.add_argument("--max_tokens", type=int, default=10240,
-                    help="Per-round max new tokens. 3 rounds × 10,240 = 30,720, sized to "
-                         "match LIMO-v2's p99 (~31K) under the 32K SFT cutoff_len.")
-    ap.add_argument("--cumulative_token_cap", type=int, default=30720,
-                    help="Hard cap on total response length per chain (sum of all rounds, "
-                         "generated tokens only — excludes prompt and injection-phrase tokens). "
-                         "Once exceeded, that chain stops; other chains continue.")
+    ap.add_argument("--max_rounds", type=int, default=2)
+    ap.add_argument("--max_tokens_r1", type=int, default=20000,
+                    help="Max new tokens for round 1. Default 20000 covers baseline "
+                         "SDPO's reasoning-length p99 (~9.6K observed under the old 10K "
+                         "cap, true p99 is higher) plus the long tail seen on hard "
+                         "problems where the model occasionally fills 16-18K and still "
+                         "hasn't committed an answer. R1's prompt is just the question, "
+                         "so the full vLLM context is available for generation.")
+    ap.add_argument("--max_tokens_r2", type=int, default=10720,
+                    help="Max new tokens for each continuation round (R2+). Default "
+                         "10720 = 30720 (CUMULATIVE_TOKEN_CAP) - 20000 (R1), so a chain "
+                         "that uses its full R1 budget can still use its full R2 budget "
+                         "before the cumulative cap kicks in. Asymmetric vs R1 because "
+                         "R2 has the R1 trace as prompt (less work to do) AND the R1 "
+                         "trace eats into the max_model_len budget (less room available).")
     ap.add_argument("--temperature", type=float, default=0.6)
     ap.add_argument("--top_p", type=float, default=0.95)
     ap.add_argument("--top_k", type=int, default=20)
     ap.add_argument("--frequency_penalty", type=float, default=0.0)
     ap.add_argument("--max_model_len", type=int, default=32768,
                     help="Qwen3-8B native context. Must hold prompt + accumulated prior "
-                         "rounds + current round's max_tokens; at round 3 worst case this "
-                         "is ~250 + 20,480 + 26 + 10,240 ≈ 31K, so 32K is the right size.")
+                         "rounds + current round's max_tokens; at round 2 worst case this "
+                         "is ~250 (chat template + question) + 20,000 (R1 thinking) + "
+                         "16 (injection) + 10,720 (R2) ≈ 31K, so 32K is the right size.")
     ap.add_argument("--gpu_memory_utilization", type=float, default=0.90)
     ap.add_argument("--tensor_parallel_size", type=int, default=1)
     ap.add_argument("--max_problems", type=int, default=0,
                     help="If >0, only the first N seeds are processed.")
     ap.add_argument("--seed", type=int, default=42, help="vLLM sampling seed.")
+    ap.add_argument("--injection_phrase", default=None,
+                    help="Override the default injection phrase. Useful for ablations. "
+                         "Pass the exact string including any leading space and trailing newlines "
+                         "you want appended after the prior thinking.")
     args = ap.parse_args()
+
+    global _ACTIVE_INJECTION_PHRASE
+    if args.injection_phrase is not None:
+        _ACTIVE_INJECTION_PHRASE = args.injection_phrase
+    print(f"  injection_phrase: {_ACTIVE_INJECTION_PHRASE!r}")
 
     if args.num_chains < 1:
         raise SystemExit("--num_chains must be >= 1")
@@ -279,7 +306,7 @@ def main():
         temperature=args.temperature,
         top_p=args.top_p,
         top_k=args.top_k,
-        max_tokens=args.max_tokens,
+        max_tokens=args.max_tokens_r1,
         frequency_penalty=args.frequency_penalty,
         seed=args.seed,
     )
@@ -288,7 +315,7 @@ def main():
         temperature=args.temperature,
         top_p=args.top_p,
         top_k=args.top_k,
-        max_tokens=args.max_tokens,
+        max_tokens=args.max_tokens_r2,
         frequency_penalty=args.frequency_penalty,
         seed=args.seed,
     )
@@ -362,7 +389,7 @@ def main():
                         chain["final_correct"] = True
                         chain["done"] = True
                         n_chains_correct += 1
-                    elif chain["cumulative_tokens"] >= args.cumulative_token_cap:
+                    elif chain["cumulative_tokens"] >= CUMULATIVE_TOKEN_CAP:
                         chain["done"] = True
                         n_chains_capped += 1
         else:
@@ -418,7 +445,7 @@ def main():
                     s["final_correct"] = True
                     s["done"] = True
                     n_chains_correct += 1
-                elif s["cumulative_tokens"] >= args.cumulative_token_cap:
+                elif s["cumulative_tokens"] >= CUMULATIVE_TOKEN_CAP:
                     s["done"] = True
                     n_chains_capped += 1
 
@@ -491,6 +518,8 @@ def main():
         "adapter": adapter_path,
         "merged": args.merged if args.model == "lora" else None,
         "model_path": model_path,
+        "injection_phrase": _ACTIVE_INJECTION_PHRASE,
+        "cumulative_token_cap": CUMULATIVE_TOKEN_CAP,
         "args": vars(args),
     }
     with open(stats_path, "w") as f:

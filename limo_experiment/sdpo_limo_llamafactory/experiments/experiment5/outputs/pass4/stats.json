@@ -1,0 +1,37 @@
+{
+  "n_problems": 628,
+  "num_chains_max": 4,
+  "num_chains_uniform": true,
+  "pass_at_K_round_correct": [
+    404,
+    420
+  ],
+  "pass_at_K_round_rate": [
+    0.643312101910828,
+    0.6687898089171974
+  ],
+  "n_problems_any_correct": 420,
+  "chain_pass_at_1_total": 984,
+  "chains_total": 2512,
+  "chain_pass_at_1_rate": 0.39171974522292996,
+  "inputs": [
+    {
+      "path": "outputs/pass1/injection_traces.jsonl",
+      "n_problems_seen": 628,
+      "injection_phrase": " Wait, that might be wrong. Let's try some different approaches.\n\n",
+      "num_chains": 1,
+      "max_rounds": 2,
+      "model_path": "beanie00/math-SDPO-Qwen3-8B-think-step-100",
+      "seed": 42
+    },
+    {
+      "path": "outputs/pass3/injection_traces.jsonl",
+      "n_problems_seen": 628,
+      "injection_phrase": " Wait, that might be wrong. Let's try some different approaches.\n\n",
+      "num_chains": 3,
+      "max_rounds": 2,
+      "model_path": "beanie00/math-SDPO-Qwen3-8B-think-step-100",
+      "seed": 43
+    }
+  ]
+}

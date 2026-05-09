@@ -1,10 +1,11 @@
 # Experiment 5 — On-policy injection-recovery training
 
 Goal: build an on-policy SFT dataset by letting a model attempt competition-math
-problems, then injecting "Wait, the answer is wrong. Let's think again." at the
-end of any wrong attempt and resampling — s1-style budget forcing applied to
-*correctness* rather than length. Train a LoRA on the resulting traces and check
-whether it beats the off-policy LIMO LoRA (experiments 1–4).
+problems, then injecting a hedging phrase ("Wait, that might be wrong. Let's
+try some different approaches.") at the end of any wrong attempt and
+resampling — s1-style budget forcing applied to *correctness* rather than
+length. Train a LoRA on the resulting traces and check whether it beats the
+off-policy LIMO LoRA (experiments 1–4).
 
 **Depends on Experiment 4.** The training step uses experiment 4's best
 `(rank, epochs, lr)` config; the generation step optionally uses experiment 4's
@@ -76,8 +77,8 @@ matching `evaluate_aime.py`). Extract the last `\boxed{...}`, grade against GT.
 
 Each problem ends up with `{rounds, final_correct, final_trace}` where
 `final_trace` is the concatenation of all rounds (with injection breaks visible
-as in-trace markers — the model literally produced "Wait, the answer is wrong.
-Let's think again." each retry).
+as in-trace markers — the model literally produced "Wait, that might be wrong.
+Let's try some different approaches." each retry).
 
 Output: `outputs/injection_traces.jsonl` with one record per seed problem.
 `outputs/stats.json` reports round-by-round pass rate — this is the s1-analog
@@ -152,24 +153,31 @@ RANK=8 EPOCHS=1.0 LR=5e-5 bash train.sh
 - **Seed set size vs pass@k.** 813 LIMO seeds × ~70% integer-answerable ×
   3 rounds at ~12K tokens each ≈ 6–8 H100-hours per generation pass. Use
   `SEED_MAX=200` to cap during pipeline shake-out.
-- **Injection phrase wording.** Default: `" Wait, the answer is wrong. Let's
-  think again.\n\n"`. s1 just used `"Wait"`. The longer phrase is unambiguous
-  but signals "this was graded" more strongly than s1's open-ended hedge —
-  worth ablating once the pipeline works.
+- **Injection phrase wording.** Current: `" Wait, that might be wrong. Let's
+  try some different approaches.\n\n"`. s1 just used `"Wait"`. Earlier
+  iterations used `"Wait, the answer is wrong. Let's think again."` (asserts
+  wrongness as fact, drove a "check-and-reverify" pathology), and then
+  `"Wait, that might be off. Alternatively, let me try a different
+  approach."` (good but pluralized exploration not strong enough). The
+  current wording softens with `might be wrong` (uncertainty rather than
+  claim of error) and explicitly invites *plural* "different approaches" to
+  push the model away from re-verifying its single prior path and toward
+  open hedge-and-explore.
 - **Cap on cumulative tokens.** We cap at 30,720 cumulative generated tokens
-  (3 rounds × 10,240 per-round `max_tokens`) in `generate_injections.py`,
-  matching `cutoff_len=32768` in `qwen3_sdpo_lora_sft.yaml` (Qwen3-8B's native
-  context). This sizes the trace distribution to LIMO-v2's p99 (~31K tokens) so
-  the verbose, epistemically-marked tail isn't systematically clipped — the
-  whole point of experiment 5 is to match LIMO's reasoning length.
-  `cumulative_token_cap` counts only generated tokens (excludes the prompt and
-  the ~13-token injection phrases, which feed into the next round's prompt
-  rather than being generated). Round 3 worst-case vLLM context use is ~31K,
-  inside `max_model_len=32768`.
+  (R1=20,000 + R2=10,720) in `generate_injections.py`, matching
+  `cutoff_len=32768` in `qwen3_sdpo_lora_sft.yaml` (Qwen3-8B's native
+  context). The asymmetric per-round split reflects that R1 has only the
+  question as prompt (full context available for thinking) while R2's
+  prompt is R1's full trace + injection (so its remaining vLLM context is
+  ~32K - 20K - 250 prompt overhead - 16 injection ≈ 12.5K, of which we use
+  10,720 with margin). `cumulative_token_cap` counts only generated tokens
+  (excludes prompt and injection-phrase tokens). Round 2 worst-case vLLM
+  context use is ~31K, inside `max_model_len=32768`.
 - **Risk of "self-fulfilling" injection.** If the model learns that
-  "Wait, the answer is wrong. ..." always precedes a correct answer in
-  training data, it may emit the phrase liberally at inference and skip
-  honest verification. Worth checking final-token distributions post-training.
+  "Wait, that might be wrong. Let's try some different approaches." always
+  precedes a correct answer in training data, it may emit the phrase
+  liberally at inference and skip honest verification. Worth checking
+  final-token distributions post-training.
 
 ## Results — generation pass 1 (baseline SDPO policy, 10,240 per-round cap)
 
@@ -218,90 +226,146 @@ for typical responses but bites on the harder ~20%.
 
 ## Decision — generation pass 2 config
 
-Move to **`max_rounds=2`, `max_tokens=15000-16000`,
-`cumulative_token_cap=29000`** to:
+Move to **`max_rounds=2`, `max_tokens_r1=20000`, `max_tokens_r2=10720`,
+`CUMULATIVE_TOKEN_CAP=30720`** (R1+R2 sum to the cap) to:
 
-1. Cut R1 truncation from 21% → ~2-3%, eliminating the budget-vs-injection
-   confound on the recovery measurement.
-2. Stay safely inside Qwen3-8B's 32K native context. (Three rounds at 16K
-   each is impossible inside 32K — R2's prompt already includes R1's full
-   trace.)
+1. Cut R1 truncation to near-zero (smoke test on 20 problems showed 0/20
+   R1s without a `\boxed{}` at 18K; bumping to 20K covers the residual long
+   tail), eliminating the budget-vs-injection confound on the recovery
+   measurement.
+2. Stay safely inside Qwen3-8B's 32K native context. R2 worst case is
+   ~250 (chat template + question) + 20,000 (R1 thinking) + 16 (injection)
+   + 10,720 (R2) ≈ 31K, with ~1.7K margin under `max_model_len=32768`.
+3. Drop `max_rounds=3`. R3 contributed only 1.7pp pass@1 lift (53/3180
+   chains) under the old config and most of that lift was budget-driven
+   (R1 truncated → R2/R3 just finishes writing). With the wider R1 cap and
+   genuine R1 commitment, R3 gives diminishing returns.
 
-R3 contributes only 1.7% recovery rate (53/3180 chains, 46 in the
-recovery-only filter), so dropping `max_rounds=3` costs little.
+The asymmetric R1=20K / R2=10.7K split reflects that R1 has the full vLLM
+context for thinking from scratch, while R2's prompt already contains
+R1's trace and so has less room left. R2 is also a *targeted* recovery
+(continue from a specific failure) rather than a fresh run, so it
+generally needs fewer tokens.
 
-**Existing R3 traces are kept** — they're already on disk in
-`onpolicy_injection_dataset.json` and `onpolicy_recovery_dataset.json`. The
-re-run only adds new data; nothing lost.
+**Existing pass-1 traces are kept** — they're already on disk in
+`onpolicy_injection_dataset.json` and `onpolicy_recovery_dataset.json`,
+and were used to identify the budget contamination. The pass-2 re-run
+only adds new data; nothing lost.
 
-## Genuine-recovery filter — `outputs/onpolicy_recovery_dataset.json`
+## Results — generation pass 2
 
-A stricter version of the SFT dataset that keeps only chains where the
-model **committed a wrong boxed answer and self-corrected**:
+Run config: `model=baseline`, `max_rounds=2`, `max_tokens_r1=20000`,
+`max_tokens_r2=10720`, `cumulative_token_cap=30720`, hedging phrase
+`" Wait, that might be wrong. Let's try some different approaches.\n\n"`.
 
-- Case A: R1 emitted a wrong boxed answer; R2 correct
-- Case B: R2 emitted a wrong boxed answer; R3 correct (R1 may be truncated)
+Seed set: `outputs/diagnostic_seeds.jsonl` — the 628 LIMO-v2 problems left
+after dropping the 167 in `outputs/easy_r1_solved_ids.txt` (= problems
+where all 4 chains got R1 correct in the overnight pass-1 run, so
+injection can't help). Trace files:
 
-| Case | Definition | Rows |
-|---|---|---:|
-| A | wrong R1 → correct R2 | 80 |
-| B | wrong R2 → correct R3 | 46 |
-| **Total** | | **126** |
+- `outputs/pass1/` — `num_chains=1`, `seed=42`, 78 min wall
+- `outputs/pass3/` — `num_chains=3`, `seed=43`, 247 min wall
+- `outputs/pass4/` — combined via `combine_passes.py` (4 chains/problem)
 
-Of the 46 Case B rows, **29 are "strict"** — both R1 and R2 committed wrong
-boxed answers (two genuine self-corrections in one trace).
+### Pass rates
 
-Caveat: 126 rows is below the ~150-problem floor for stable LoRA SFT noted
-above. Either grow the dataset via the pass-2 re-run, or mix with a sample
-of R1-correct rows from `onpolicy_injection_dataset.json` for stability.
+| Layer | R1 | R2 |
+|---|---|---|
+| Per-chain pass@1 (combined, 2512 chains) | 35.5% | **39.2%** (+3.7pp) |
+| Problem-level pass@4 (any chain) | 64.3% | **66.9%** (+2.6pp) |
 
-Worked examples in `outputs/recovery_cases.md` (5 illustrative traces:
-A.1 seating, A.2 Rubik's, A.3 power tower; B.1 parallelogram, B.2 cube
-plane). Recovery types observed: constraint misreading, last-step
-inversion, structural rethink, hypothesis search, criterion bug.
+R1 truncation effectively eliminated: 0 chains hit `max_tokens_r1=20000`
+in either pass; only **12/2512 chains** failed to emit a `\boxed{}` in R1
+(0.5%, vs ~16% under the old 10K cap). R2 cumulative-cap hits: 14
+(pass@1) + 56 (pass@3) = 70/2512 = 2.8% — these are chains that fully
+spent both rounds and still didn't recover.
 
-## Pass-2 re-run targets — `outputs/rerun_candidates.jsonl`
+### Recovery dataset (R2-correct cohort)
 
-513 of 795 problems flagged for re-run, prioritized:
+| | n |
+|---|---:|
+| R2-correct chains (any) | 90 |
+| ↳ pure truncation (no R1 \\boxed) | 12 |
+| ↳ at-cap with answer | 1 |
+| **↳ genuine committed-wrong → recovered** | **77** |
+| Distinct problems with ≥1 genuine recovery | 67 |
 
-| Bucket | Count | Rerun? | Reason |
-|---|---:|:---:|---|
-| Already have ≥1 genuine recovery | 115 | skip | 126 traces secured |
-| All 4 chains R1-correct (too easy) | 167 | skip | no recovery possible |
-| **Has ≥1 truncated R1** | **226** | **high** | best yield from larger cap |
-| Committed wrong, never recovered | 144 | medium | re-roll for stochastic recoveries |
-| All chains failed entirely | 143 | low | hard problems; may still fail |
+Genuine-recovery rate of 85.6% of R2-correct (vs ~72% under the old
+18K-cap config), confirming the wider R1 budget produces purer recovery
+signal at the cost of overall recovery count. R1-correct rows available
+for SFT diversity: 894 across the 2512 chains.
 
-Outputs:
-- `rerun_candidates.jsonl` — per-problem record with priority + chain stats
-- `rerun_problem_ids.txt` — flat ID list for piping into seed filter
+### Epistemic density (pooled, per 1K thinking words)
 
-Expected yield from pass 2 (rough): ~50-80 new genuine recoveries from the
-high-priority bucket, low double digits from medium, <10% from low. Total
-expected new genuine-recovery rows: ~80-120, roughly doubling
-`onpolicy_recovery_dataset.json`.
+Headline only — see `analyze_epistemic_tokens.py` for the full per-token
+table. On the R2-correct cohort (n=90): R1=16.49, R2-marginal=12.66,
+FULL=15.61. R2 content is ~23% less hedge-dense than R1, which we read
+as targeted recovery rather than open re-exploration. The injection's
+phrase tokens (`wait`, `might`) drive a +58% lift in `might` density in
+R2, but `alternatively` / `maybe` / `perhaps` all *fall* in R2 — the
+"different approaches" pluralization didn't broaden exploration tokens
+the way the wording suggested it might.
 
-### Re-run command
+### SFT data outlook
+
+77 genuine recovery rows is below the ~150-problem floor for stable LoRA
+SFT. Options: (a) augment with a stratified sample of R1-correct rows
+for diversity, (b) run another seeded pass to grow the genuine bucket,
+or (c) iterate on the phrase to boost `alternatively` / `maybe` in R2
+before bulking up.
+
+## Running detached for long jobs
+
+A full 795-problem pass@1 takes ~80 min; pass@3 takes ~3 hours. Launching
+through an IDE-tied shell (Cursor / Claude Code) means the run can die
+when the IDE restarts. Use `setsid` + `nohup` + redirects to fully detach
+the process so it's owned by `init` (PID 1) and survives any parent exit:
 
 ```bash
-# Filter seed_problems.jsonl to rerun candidates
-python3 -c "
-import json
-ids = set(open('outputs/rerun_problem_ids.txt').read().split())
-with open('seed_problems.jsonl') as f, open('outputs/rerun_seeds.jsonl', 'w') as out:
-    for line in f:
-        d = json.loads(line)
-        if d['problem_id'] in ids: out.write(line)
-"
-
-# Re-run with the wider cap
-python3 generate_injections.py \
-    --seeds outputs/rerun_seeds.jsonl \
-    --output_dir outputs/rerun \
-    --max_rounds 2 \
-    --max_tokens 16000 \
-    --cumulative_token_cap 29000
-
-# Filter the new traces with the same genuine-recovery criteria,
-# then merge with onpolicy_recovery_dataset.json (dedupe by question + answer hash).
+cd /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment5
+setsid nohup python3 generate_injections.py \
+    --seeds outputs/diagnostic_seeds.jsonl \
+    --output_dir outputs/pass1 \
+    --num_chains 1 \
+    --model baseline \
+    --seed 42 \
+    < /dev/null > outputs/pass1.log 2>&1 &
+disown
 ```
+
+Each piece matters:
+- `setsid` → new session, decouples from controlling terminal
+- `nohup` → ignore SIGHUP if the parent shell does end up signalling its
+  process group
+- `< /dev/null` → no stdin (otherwise an IDE-closed terminal can send EOF
+  and stall reads)
+- `> outputs/<run>.log 2>&1` → both streams to a file we can tail
+- `&` → background
+- `disown` → remove from the shell's job table so the shell can exit
+  without the kernel sending SIGHUP to children
+
+### Verify the run is alive
+
+```bash
+pgrep -af "python3 generate_injections"     # should show the python parent
+ps -ef | grep VLLM | grep -v grep           # should show the EngineCore child
+tail -f outputs/pass1.log                    # live log
+nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader
+```
+
+### Kill cleanly
+
+`pkill -f "generate_injections"` is dangerous from inside an interactive
+shell because the bash command line *itself* contains that substring,
+so pkill matches and kills your own shell mid-command. Anchor the regex
+at the start of the cmdline so it only matches the python process:
+
+```bash
+pkill -f "^python3 generate_injections"
+```
+
+Or kill by PID directly: `pgrep -f "^python3 generate_injections" | xargs -r kill`.
+After killing, also check for orphaned `VLLM::EngineCore` processes
+(child of the parent python; if SIGTERM-ed parent dies first the engine
+can be reparented to init and keep using the GPU): `pgrep -af "VLLM::EngineCore"`
+and kill any matches by PID.
