@@ -18,5 +18,15 @@
       "response": "output",
       "system": "system"
     }
+  },
+  "limo_ablation_200": {
+    "file_name": "experiments/experiment6/outputs/limo_ablation_dataset_train.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
   }
 }

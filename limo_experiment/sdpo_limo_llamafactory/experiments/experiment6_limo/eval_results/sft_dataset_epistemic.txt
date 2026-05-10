@@ -1,0 +1,19 @@
+  dataset: /Users/jeonghyunyoon/Documents/MIT/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment6/outputs/limo_ablation_dataset.json  (200 rows)
+
+=== ALL (n=200) ===
+  token              count     /1Kw
+  ───────────────────────────────────
+  wait               14946   10.439
+  hmm                 4611    3.221
+  perhaps             6206    4.335
+  maybe               9874    6.897
+  actually            1856    1.296
+  alternatively       9513    6.645
+  seems                700    0.489
+  might               2080    1.453
+  likely               257    0.180
+  check               2528    1.766
+  ───────────────────────────────────
+  TOTAL              52571   36.720
+  words            1431688
+
