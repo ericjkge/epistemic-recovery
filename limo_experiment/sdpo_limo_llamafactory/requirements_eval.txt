@@ -34,3 +34,7 @@ huggingface_hub>=0.23.0
 # Plotting (used by analyze_epistemic.py, plot_probe_curves.py,
 # analyze_token_distribution.py, evaluate_epistemic_alignment.py)
 matplotlib>=3.7.0
+
+# Symbolic-equivalence grader for MATH500 (rule-lighteval/MATH_v2 style).
+# Not needed for AIME-only runs; loaded lazily by eval/evaluate_aime.py.
+math-verify

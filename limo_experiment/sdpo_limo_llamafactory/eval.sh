@@ -45,7 +45,7 @@ MAX_TOKENS="${MAX_TOKENS:-24576}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-28672}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
 FREQUENCY_PENALTY="${FREQUENCY_PENALTY:-0.0}"
-BENCHMARKS="${BENCHMARKS:-aime24,aime25}"
+BENCHMARKS="${BENCHMARKS:-aime24,aime25}"  # also accepts: math500 (MATH-500, symbolic grading via math_verify)
 # baseline = SDPO model without adapter, lora = SDPO + LoRA adapter
 # add "pretrained" to include Qwen3-8B upper bound (slow — loads a third model)
 MODELS="${MODELS:-baseline,lora}"

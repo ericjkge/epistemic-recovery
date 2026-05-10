@@ -28,5 +28,15 @@
       "response": "output",
       "system": "system"
     }
+  },
+  "genuine_recovery_exp7": {
+    "file_name": "experiments/experiment7/outputs/genuine_recovery_dataset_train.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
   }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate three Qwen3-8B variants on AIME24 + AIME25 with vLLM.
+"""Evaluate three Qwen3-8B variants on AIME24 / AIME25 / MATH500 with vLLM.
 
 Models:
   baseline          beanie00/math-SDPO-Qwen3-8B-think-step-100  (no adapter)
@@ -7,12 +7,15 @@ Models:
   pretrained        Qwen/Qwen3-8B  (upper bound, full thinking-mode pretrain)
 
 For each (model, benchmark) we sample n=16 completions per problem with the Kim et al.
-generation settings, extract the LAST \\boxed{...} as the answer, and grade against the
-integer ground truth. Per-problem results are saved to results/{model}_{benchmark}.json.
+generation settings, extract the LAST \\boxed{...} as the answer, and grade.
+AIME (integer answers) is graded by integer match; MATH500 (LaTeX answers) by
+symbolic equivalence via the math_verify package. Per-problem results are saved
+to results/{model}_{benchmark}.json.
 
 Run from the sdpo_limo_llamafactory/ parent directory:
     source .venv-eval/bin/activate
-    python eval/evaluate_aime.py --adapter_path saves/qwen3_sdpo_limo_lora
+    python eval/evaluate_aime.py --adapter_path saves/qwen3_sdpo_limo_lora \\
+        --benchmarks aime24,aime25,math500
 """
 import argparse
 import json
@@ -49,7 +52,7 @@ PRETRAINED = "Qwen/Qwen3-8B"
 
 USER_TEMPLATE = "{question}\n\nPlease reason step by step, and put your final answer within \\boxed{{}}."
 
-BOXED_RE = re.compile(r"\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}")
+BOXED_RE = re.compile(r"\\boxed\{")
 
 # data/ lives one level up from this script (sdpo_limo_llamafactory/data/)
 _LOCAL_PARQUET_DIR = Path(__file__).parent.parent / "data"
@@ -71,11 +74,14 @@ def _normalize_aime_record(rec):
 def _load_aime_parquet(name: str):
     """Load from the local parquet in data/{name}.parquet.
 
-    Both aime24 and aime25 use the same logical schema but different encodings:
+    Schema variants this handles:
       - aime24: struct columns  (extra_info.raw_problem, reward_model.ground_truth)
       - aime25: JSON-string columns (need json.loads on extra_info / reward_model)
+      - math500: struct columns, but ground_truth is a LaTeX expression (string)
+                 — kept verbatim and graded via math_verify rather than int compare.
 
-    Returns a list of {problem_id, question, answer:int} or None if file not found.
+    Returns a list of {problem_id, question, answer} or None if file not found.
+    `answer` is `int` when castable (AIME), else `str` (MATH500).
     """
     parquet_path = (_LOCAL_PARQUET_DIR / f"{name}.parquet").resolve()
     if not parquet_path.exists():
@@ -109,19 +115,26 @@ def _load_aime_parquet(name: str):
 
         if not question or answer is None:
             continue
-        try:
-            a_int = int(str(answer).strip())
-        except ValueError:
-            continue
-        out.append({"problem_id": f"{name}_{i:03d}", "question": question, "answer": a_int})
+        # AIME answers are always integers; cast and skip on failure.
+        # MATH500 (and any non-AIME benchmark) keeps the LaTeX string verbatim
+        # so symbolic grading sees the full expression even when it looks numeric.
+        if name.startswith("aime"):
+            try:
+                answer = int(str(answer).strip())
+            except ValueError:
+                continue
+        else:
+            answer = str(answer).strip()
+        out.append({"problem_id": f"{name}_{i:03d}", "question": question, "answer": answer})
 
     return out or None
 
 
 def load_aime_benchmark(name: str):
-    """Return a list of {id, question, answer:int} dicts.
+    """Return a list of {id, question, answer} dicts.
 
-    Tries the local parquet (data/{name}.parquet) first, then falls back to HuggingFace.
+    Tries the local parquet (data/{name}.parquet) first, then falls back to HuggingFace
+    (AIME only — math500 has no HF fallback wired up; ship the parquet).
     """
     local = _load_aime_parquet(name)
     if local:
@@ -142,10 +155,15 @@ def load_aime_benchmark(name: str):
             ("yentinglin/aime_2025", "train"),
             ("MathArena/aime_2025", "train"),
         ],
-    }[name]
+    }
+    if name not in candidates:
+        raise RuntimeError(
+            f"No local parquet found at data/{name}.parquet and no HuggingFace fallback "
+            f"is configured for {name}."
+        )
 
     last_err = None
-    for ds_name, split in candidates:
+    for ds_name, split in candidates[name]:
         try:
             ds = load_dataset(ds_name, split=split)
             print(f"  loaded {name} from {ds_name} ({split}) — {len(ds)} problems")
@@ -171,11 +189,32 @@ def load_aime_benchmark(name: str):
 # ---------------------------------------------------------------------------
 
 def extract_last_boxed(text: str) -> str:
-    """Return the inner contents of the LAST \\boxed{...} in text, or ''. """
-    last = None
+    """Return the inner contents of the LAST \\boxed{...} in text, or ''.
+
+    Uses a balanced-brace scan so deeply nested LaTeX answers
+    (e.g. \\boxed{\\frac{\\sqrt{3}}{3}}) extract correctly, where a
+    bounded regex like `\\{[^{}]*\\}` would stop too early.
+    """
+    last_inner = ""
     for m in BOXED_RE.finditer(text):
-        last = m
-    return last.group(1).strip() if last else ""
+        start = m.end()  # first char after the opening '{'
+        depth = 1
+        i = start
+        n = len(text)
+        while i < n and depth > 0:
+            c = text[i]
+            if c == "\\" and i + 1 < n:
+                i += 2  # skip escaped char (handles \{, \}, \\, etc.)
+                continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    last_inner = text[start:i].strip()
+                    break
+            i += 1
+    return last_inner
 
 
 def grade_int(extracted: str, ground_truth: int) -> bool:
@@ -193,6 +232,48 @@ def grade_int(extracted: str, ground_truth: int) -> bool:
         return int(m.group()) == ground_truth
     except ValueError:
         return False
+
+
+# math_verify is loaded lazily so AIME-only runs don't pay the import cost.
+_MATH_VERIFY = None
+
+
+def _get_math_verify():
+    global _MATH_VERIFY
+    if _MATH_VERIFY is None:
+        try:
+            from math_verify import parse, verify  # type: ignore
+            _MATH_VERIFY = (parse, verify)
+        except ImportError as e:
+            raise RuntimeError(
+                "MATH500 grading requires the `math-verify` package. "
+                "Install with: pip install math-verify"
+            ) from e
+    return _MATH_VERIFY
+
+
+def grade_math(extracted: str, ground_truth: str) -> bool:
+    """Symbolic-equivalence grader for MATH500-style LaTeX answers.
+
+    Re-wraps both sides in \\boxed{} so math_verify's default parser picks them up
+    (it expects answer markers, not bare expressions).
+    """
+    if not extracted:
+        return False
+    parse, verify = _get_math_verify()
+    try:
+        gt = parse(r"\boxed{" + str(ground_truth) + r"}")
+        pred = parse(r"\boxed{" + extracted + r"}")
+        return bool(verify(gt, pred))
+    except Exception:
+        return False
+
+
+def grade(extracted: str, ground_truth) -> bool:
+    """Dispatch to int or symbolic grader based on ground-truth type."""
+    if isinstance(ground_truth, int):
+        return grade_int(extracted, ground_truth)
+    return grade_math(extracted, ground_truth)
 
 
 # ---------------------------------------------------------------------------
@@ -327,19 +408,23 @@ def run_one_model(
                     response_lengths.append(len(seq.tolist()))
 
             extracted = [extract_last_boxed(g) for g in generations]
-            correctness = [grade_int(e, prob["answer"]) for e in extracted]
+            correctness = [grade(e, prob["answer"]) for e in extracted]
             if any(correctness):
                 n_correct_problems += 1
             n_ok = sum(correctness)
             running_correct += n_ok
             running_total += len(correctness)
             mean_len = sum(response_lengths) // len(response_lengths)
+            gt_disp = str(prob["answer"])
+            if len(gt_disp) > 40:
+                gt_disp = gt_disp[:37] + "..."
+            ex_disp = [e if len(e) <= 40 else e[:37] + "..." for e in extracted]
             print(
                 f"  [{i:>2}/{len(problems)}] "
                 f"correct={n_ok}/{len(correctness)}  "
                 f"running_acc={running_correct/running_total:.3f}  "
-                f"gt={prob['answer']}  "
-                f"extracted={extracted}  "
+                f"gt={gt_disp}  "
+                f"extracted={ex_disp}  "
                 f"mean_len={mean_len}",
                 flush=True,
             )
@@ -421,7 +506,9 @@ def main():
                         default=len(os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")))
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.90)
     parser.add_argument("--benchmarks", default="aime24,aime25",
-                        help="Comma-separated subset of {aime24,aime25}")
+                        help="Comma-separated subset of {aime24,aime25,math500}. "
+                             "math500 is graded by symbolic equivalence (math_verify); "
+                             "aime24/aime25 by integer match.")
     parser.add_argument("--models", default="baseline,lora,pretrained",
                         help="Comma-separated subset of {baseline,lora,pretrained}")
     parser.add_argument("--backend", choices=["vllm", "hf"], default="vllm",
