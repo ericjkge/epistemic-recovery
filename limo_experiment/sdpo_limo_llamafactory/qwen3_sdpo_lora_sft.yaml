@@ -4,7 +4,7 @@
 ### Model
 model_name_or_path: beanie00/math-SDPO-Qwen3-8B-think-step-100
 trust_remote_code: true
-flash_attn: sdpa       # fall back to sdpa if flash-attn not installed
+flash_attn: fa2        # FlashAttention 2; halves activation memory at 32K seq vs sdpa
 
 ### Method
 stage: sft

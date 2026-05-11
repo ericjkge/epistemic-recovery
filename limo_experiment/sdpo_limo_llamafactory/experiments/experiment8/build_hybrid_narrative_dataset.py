@@ -181,8 +181,29 @@ def main():
     print(f"  → {out_path}")
 
     if args.strict:
-        if rec_box_after > 0 or rec_fa_after > 0 or limo_box_after > 0 or limo_fa_after > 0:
-            print("STRICT MODE FAIL: residual markers in <think>", file=sys.stderr)
+        # New policy: narrativize_assistant_output preserves exactly ONE terminal
+        # **Final Answer**\boxed{X} commit inside <think>. Strict mode expects
+        # exactly that — 1 boxed and 1 'Final Answer' per row (not 0). Earlier
+        # intermediate commits are still removed; only the terminal one is kept
+        # as a learned exit cue.
+        exp_rec = len(rec_narr)
+        exp_limo = len(limo_narr)
+        if (
+            rec_box_after != exp_rec or rec_fa_after != exp_rec
+            or limo_box_after != exp_limo or limo_fa_after != exp_limo
+        ):
+            print(
+                "STRICT MODE FAIL: terminal-commit count mismatch — expected exactly 1 per row",
+                file=sys.stderr,
+            )
+            print(
+                f"  recovery: boxed={rec_box_after}/{exp_rec}  fa={rec_fa_after}/{exp_rec}",
+                file=sys.stderr,
+            )
+            print(
+                f"  LIMO:     boxed={limo_box_after}/{exp_limo}  fa={limo_fa_after}/{exp_limo}",
+                file=sys.stderr,
+            )
             return 2
 
     return 0

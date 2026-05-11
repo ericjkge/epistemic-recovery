@@ -38,5 +38,45 @@
       "response": "output",
       "system": "system"
     }
+  },
+  "hybrid_narrative_exp8": {
+    "file_name": "experiments/experiment8/outputs/hybrid_narrative_dataset_train.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
+  },
+  "hybrid_raw_exp8_v2": {
+    "file_name": "experiments/experiment8/outputs/hybrid_raw_dataset_train.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
+  },
+  "hybrid_narrative_exp8_v2": {
+    "file_name": "experiments/experiment8/outputs/hybrid_narrative_dataset_v2_train.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
+  },
+  "onpolicy_only_exp8_v2": {
+    "file_name": "experiments/experiment8/outputs/onpolicy_only_dataset_v2_train.json",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
   }
 }

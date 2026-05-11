@@ -1,0 +1,16 @@
+EXPERIMENT         experiment8_v2
+RUN_ID             20260511_213223
+BASE_MODEL         beanie00/math-SDPO-Qwen3-8B-think-step-100
+PRETRAINED_MODEL   Qwen/Qwen3-8B
+ADAPTER_DIR        /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8_v2/adapter
+MERGED_DIR         /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8_v2/adapter/merged
+RESULTS_DIR        /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8_v2/eval_results
+N_EPOCHS           2
+LORA_RANK          16
+LR                 5e-5
+CUTOFF_LEN         24576
+GRAD_ACCUM         8
+N_PROBES           50
+PROBE_EVAL_STEPS   20
+WANDB_PROJECT      
+DATE               2026-05-11T21:32:23Z

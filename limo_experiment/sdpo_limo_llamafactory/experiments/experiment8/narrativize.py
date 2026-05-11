@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Data-hygiene utility for experiment 8.
 
-Enforces a single global rule on every alpaca-row's `output` field:
+Enforces a global rule on every alpaca-row's `output` field:
 
-    ``\\boxed{...}`` and ``**Final Answer**`` appear EXACTLY ONCE per response,
-    in the terminal commit AFTER ``</think>``. Inside ``<think>...</think>``,
-    reasoning is pure prose narrative — no structural commit markers, no
-    inline ``\\boxed{}``, no ``**Final Answer**``.
+    ``\\boxed{...}`` and ``**Final Answer**`` appear EXACTLY ONCE inside
+    ``<think>...</think>`` as the **terminal commit block** immediately before
+    ``</think>``, and EXACTLY ONCE after ``</think>`` as the final answer.
+    Earlier intermediate commits inside ``<think>`` are rewritten to prose.
 
-The two sources that violate this rule (and that this script fixes):
+The terminal commit-shape inside ``<think>`` is preserved as a learned exit
+pattern: pure prose without any structural commit anchor causes loop
+pathology, so this script keeps the structural shape while removing the
+multi-commit + mode-collapse pattern of the raw sources.
+
+The two sources that this script normalizes:
 1. LIMO-v2 traces — human authors use ``\\boxed{intermediate}`` as inline LaTeX
    throughout solutions. The original wrapping in ``make_limo_dataset.py``
    only strips the LAST ``\\boxed{}``, leaving earlier ones inside ``<think>``.
@@ -18,7 +23,7 @@ The two sources that violate this rule (and that this script fixes):
    content but leaves the pre-``</think>`` "Final Answer" block in place.
 
 Transform pipeline (applied ONLY inside the <think>...</think> span):
-1. Remove ``[ws]**Final Answer**[:?][ws]\\boxed{...}[ws]`` blocks
+1. Remove ALL ``[ws]**Final Answer**[:?][ws]\\boxed{...}[ws]`` blocks
    (with brace-balanced matching for nested LaTeX like ``\\boxed{\\frac{a}{b}}``).
 2. Replace any remaining inline ``\\boxed{X}`` → ``X`` (also brace-balanced).
    Empty ``\\boxed{}`` strings are PRESERVED — the model often quotes the system
@@ -26,9 +31,17 @@ Transform pipeline (applied ONLY inside the <think>...</think> span):
    legitimate prose, not a commit.
 3. Remove any leftover ``**Final Answer**`` markers.
 4. Collapse runs of >2 blank lines to 2.
+5. (NEW, default-on) Append a single ``**Final Answer**\\n\\boxed{X}`` block
+   immediately before ``</think>``, with X extracted from the post-``</think>``
+   final-answer line so it always matches the model's terminal commit. This is
+   the "terminal commit-shape" the model learns to emit before closing
+   ``</think>`` — without it, narrativized traces have no structural exit cue
+   and the model learns to ruminate indefinitely. Disable with
+   ``preserve_terminal_commit=False`` (CLI flag: ``--no_preserve_terminal_commit``)
+   to restore strict prose-only thinking.
 
-Post-``</think>`` content is left untouched (that's the SINGLE terminal commit,
-which is the only place ``\\boxed{}`` is allowed).
+Post-``</think>`` content is left untouched (the single user-facing terminal
+commit).
 """
 import argparse
 import json
@@ -139,9 +152,40 @@ def _replace_inline_boxed(text: str) -> str:
     return "".join(out)
 
 
-def narrativize_assistant_output(text: str) -> str:
-    """Rewrite a full alpaca `output` value so the <think> span is narrative-only.
-    Post-</think> tail is preserved verbatim."""
+def _extract_first_nonempty_boxed(text: str) -> str | None:
+    """Return the inner value of the first non-empty ``\\boxed{...}`` in text.
+    Brace-balanced; skips empty ``\\boxed{}``. Returns None if none found."""
+    i = 0
+    while True:
+        j = text.find(_BOXED_OPEN, i)
+        if j < 0:
+            return None
+        end = _walk_balanced_braces(text, j + len(_BOXED_OPEN) - 1)
+        if end < 0:
+            return None
+        inner = text[j + len(_BOXED_OPEN) : end - 1]
+        if inner != "":
+            return inner
+        i = end
+
+
+def narrativize_assistant_output(text: str, preserve_terminal_commit: bool = True) -> str:
+    """Rewrite a full alpaca `output` so the <think> span is narrative-only with a
+    single terminal commit block as exit cue.
+
+    Steps:
+      1. Strip all intermediate ``**Final Answer**\\n\\boxed{...}`` blocks from <think>.
+      2. Inline ``\\boxed{X}`` → ``X`` (empty ``\\boxed{}`` preserved as prose).
+      3. Strip leftover ``**Final Answer**`` markers.
+      4. Collapse blank-line runs.
+      5. (preserve_terminal_commit) Append a single ``**Final Answer**\\n\\boxed{X}``
+         block immediately before </think>, with X taken from the post-</think>
+         final-answer line so the terminal commit always matches the user-facing
+         answer. If no boxed answer is found in the post tail, no block is added
+         (leaves the trace in legacy prose-only form).
+
+    Post-</think> tail is preserved verbatim.
+    """
     close_idx = text.rfind("</think>")
     if close_idx < 0:
         thinking, post = text, ""
@@ -152,7 +196,16 @@ def narrativize_assistant_output(text: str) -> str:
     thinking = _FA_MATHDISP_RE.sub("\n\n", thinking)
     thinking = _replace_inline_boxed(thinking)
     thinking = _FA_MARKER_RE.sub("", thinking)
-    thinking = _BLANKS_RE.sub("\n\n", thinking).rstrip() + "\n"
+    thinking = _BLANKS_RE.sub("\n\n", thinking).rstrip()
+
+    if preserve_terminal_commit and post:
+        answer = _extract_first_nonempty_boxed(post)
+        if answer is not None:
+            thinking = thinking + f"\n\n**Final Answer**\n\\boxed{{{answer}}}\n"
+        else:
+            thinking = thinking + "\n"
+    else:
+        thinking = thinking + "\n"
 
     return thinking + post
 
@@ -184,7 +237,7 @@ def count_in_think(text: str, needle: str) -> int:
     return text[:close_idx].count(needle) if close_idx >= 0 else text.count(needle)
 
 
-def transform_rows(rows: list[dict]) -> tuple[list[dict], dict]:
+def transform_rows(rows: list[dict], preserve_terminal_commit: bool = True) -> tuple[list[dict], dict]:
     stats = {
         "n_rows": len(rows),
         "boxed_in_think_before": 0,
@@ -194,6 +247,7 @@ def transform_rows(rows: list[dict]) -> tuple[list[dict], dict]:
         "chars_before": 0,
         "chars_after": 0,
         "post_boxed_unchanged": 0,
+        "terminal_commit_added": 0,
     }
     out = []
     for r in rows:
@@ -202,10 +256,14 @@ def transform_rows(rows: list[dict]) -> tuple[list[dict], dict]:
         stats["fa_in_think_before"] += count_in_think(text, "Final Answer")
         stats["chars_before"] += len(text)
 
-        new_text = narrativize_assistant_output(text)
-        stats["boxed_in_think_after"] += count_boxed_in_think(new_text)
-        stats["fa_in_think_after"] += count_in_think(new_text, "Final Answer")
+        new_text = narrativize_assistant_output(text, preserve_terminal_commit=preserve_terminal_commit)
+        n_box_after = count_boxed_in_think(new_text)
+        n_fa_after = count_in_think(new_text, "Final Answer")
+        stats["boxed_in_think_after"] += n_box_after
+        stats["fa_in_think_after"] += n_fa_after
         stats["chars_after"] += len(new_text)
+        if preserve_terminal_commit and n_box_after >= 1:
+            stats["terminal_commit_added"] += 1
 
         if text.rfind("</think>") >= 0 and new_text.rfind("</think>") >= 0:
             if text[text.rfind("</think>") :] == new_text[new_text.rfind("</think>") :]:
@@ -222,9 +280,16 @@ def main():
     ap.add_argument("--input", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument(
+        "--no_preserve_terminal_commit",
+        action="store_true",
+        help="Disable the default terminal **Final Answer**\\boxed{X} commit before </think>.",
+    )
+    ap.add_argument(
         "--strict",
         action="store_true",
-        help="Fail if any row still has non-empty \\boxed{} or 'Final Answer' inside <think>.",
+        help="Fail unless every row ends with exactly one terminal **Final Answer**\\boxed{X} "
+             "before </think> (default policy). With --no_preserve_terminal_commit, instead "
+             "fail if any row has non-empty \\boxed{} or 'Final Answer' inside <think>.",
     )
     args = ap.parse_args()
 
@@ -232,12 +297,14 @@ def main():
     dst = Path(args.output)
     dst.parent.mkdir(parents=True, exist_ok=True)
 
+    preserve = not args.no_preserve_terminal_commit
     rows = json.loads(src.read_text())
-    new_rows, stats = transform_rows(rows)
+    new_rows, stats = transform_rows(rows, preserve_terminal_commit=preserve)
     dst.write_text(json.dumps(new_rows, indent=2, ensure_ascii=False) + "\n")
 
     print(f"  source                 {src}  ({stats['n_rows']} rows)")
     print(f"  output                 {dst}")
+    print(f"  preserve_terminal_commit  {preserve}")
     print(f"  chars                  {stats['chars_before']:>10d} → {stats['chars_after']:>10d}  "
           f"(Δ {stats['chars_after']-stats['chars_before']:+d})")
     print(f"  \\boxed{{X}} in <think>    "
@@ -245,10 +312,23 @@ def main():
     print(f"  'Final Answer' in <think> "
           f"{stats['fa_in_think_before']:>8d} → {stats['fa_in_think_after']:>8d}")
     print(f"  post-</think> unchanged {stats['post_boxed_unchanged']}/{stats['n_rows']}")
+    if preserve:
+        print(f"  terminal commit added   {stats['terminal_commit_added']}/{stats['n_rows']}")
 
-    if args.strict and (stats["boxed_in_think_after"] > 0 or stats["fa_in_think_after"] > 0):
-        print("STRICT MODE FAIL: residual markers in <think>", file=sys.stderr)
-        return 2
+    if args.strict:
+        if preserve:
+            expected = stats["n_rows"]
+            if stats["boxed_in_think_after"] != expected or stats["fa_in_think_after"] != expected:
+                print(
+                    f"STRICT MODE FAIL: expected exactly {expected} terminal commits, "
+                    f"got boxed={stats['boxed_in_think_after']}, fa={stats['fa_in_think_after']}",
+                    file=sys.stderr,
+                )
+                return 2
+        else:
+            if stats["boxed_in_think_after"] > 0 or stats["fa_in_think_after"] > 0:
+                print("STRICT MODE FAIL: residual markers in <think>", file=sys.stderr)
+                return 2
     return 0
 
 

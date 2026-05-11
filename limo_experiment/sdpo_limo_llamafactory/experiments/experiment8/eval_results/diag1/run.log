@@ -1,0 +1,87 @@
+  activated /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/.venv-eval
+EXPERIMENT: experiment8
+  ADAPTER_DIR  /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8/adapter
+  MERGED_DIR   /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8/adapter/merged
+  RESULTS_DIR  /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8/eval_results/diag1
+  problems     aime25_000,aime25_001
+  models       baseline,lora
+  n_sampling   2
+INFO 05-11 19:22:27 [importing.py:53] Triton module has been replaced with a placeholder.
+INFO 05-11 19:22:27 [__init__.py:239] Automatically detected platform cuda.
+Sanity eval on 2 problems: ['aime25_000', 'aime25_001']
+Loading aime25 benchmark...
+  loaded aime25 from local parquet — 30 problems
+  aime25_000  ans=70  q=Find the sum of all integer bases $b>9$ for which $17_b$ is a divisor of $97_b.$...
+  aime25_001  ans=588  q=On $\triangle ABC$ points $A, D, E$, and $B$ lie in that order on side $\overlin...
+
+======================================================================
+Loading baseline_sdpo_think_step100: beanie00/math-SDPO-Qwen3-8B-think-step-100
+INFO 05-11 19:22:30 [config.py:2968] Downcasting torch.float32 to torch.bfloat16.
+INFO 05-11 19:22:35 [config.py:717] This model supports multiple tasks: {'reward', 'classify', 'embed', 'score', 'generate'}. Defaulting to 'generate'.
+INFO 05-11 19:22:35 [config.py:2003] Chunked prefill is enabled with max_num_batched_tokens=16384.
+WARNING 05-11 19:22:35 [cuda.py:93] To see benefits of async output processing, enable CUDA graph. Since, enforce-eager is enabled, async output processor cannot be used
+INFO 05-11 19:22:37 [core.py:58] Initializing a V1 LLM engine (v0.8.5.post1) with config: model='beanie00/math-SDPO-Qwen3-8B-think-step-100', speculative_config=None, tokenizer='beanie00/math-SDPO-Qwen3-8B-think-step-100', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, override_neuron_config=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.bfloat16, max_seq_len=28672, download_dir=None, load_format=LoadFormat.AUTO, tensor_parallel_size=1, pipeline_parallel_size=1, disable_custom_all_reduce=False, quantization=None, enforce_eager=True, kv_cache_dtype=auto,  device_config=cuda, decoding_config=DecodingConfig(guided_decoding_backend='auto', reasoning_backend=None), observability_config=ObservabilityConfig(show_hidden_metrics=False, otlp_traces_endpoint=None, collect_model_forward_time=False, collect_model_execute_time=False), seed=None, served_model_name=beanie00/math-SDPO-Qwen3-8B-think-step-100, num_scheduler_steps=1, multi_step_stream_outputs=True, enable_prefix_caching=True, chunked_prefill_enabled=True, use_async_output_proc=False, disable_mm_preprocessor_cache=False, mm_processor_kwargs=None, pooler_config=None, compilation_config={"splitting_ops":[],"compile_sizes":[],"cudagraph_capture_sizes":[],"max_capture_size":0}
+WARNING 05-11 19:22:37 [utils.py:2522] Methods determine_num_available_blocks,device_config,get_cache_block_size_bytes,initialize_cache not implemented in <vllm.v1.worker.gpu_worker.Worker object at 0x72e577d96e10>
+INFO 05-11 19:22:38 [parallel_state.py:1004] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, TP rank 0
+INFO 05-11 19:22:38 [cuda.py:221] Using Flash Attention backend on V1 engine.
+WARNING 05-11 19:22:38 [topk_topp_sampler.py:69] FlashInfer is not available. Falling back to the PyTorch-native implementation of top-p & top-k sampling. For the best performance, please install FlashInfer.
+INFO 05-11 19:22:38 [gpu_model_runner.py:1329] Starting to load model beanie00/math-SDPO-Qwen3-8B-think-step-100...
+INFO 05-11 19:22:38 [weight_utils.py:265] Using model weights format ['*.safetensors']
+Loading safetensors checkpoint shards:   0% Completed | 0/4 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards:  25% Completed | 1/4 [00:00<00:00,  3.27it/s]
+Loading safetensors checkpoint shards:  50% Completed | 2/4 [00:01<00:01,  1.75it/s]
+Loading safetensors checkpoint shards:  75% Completed | 3/4 [00:01<00:00,  1.51it/s]
+Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.49it/s]
+Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.59it/s]
+
+INFO 05-11 19:22:41 [loader.py:458] Loading weights took 2.57 seconds
+INFO 05-11 19:22:41 [gpu_model_runner.py:1347] Model loading took 15.2683 GiB and 3.087611 seconds
+INFO 05-11 19:22:42 [kv_cache_utils.py:634] GPU KV cache size: 361,456 tokens
+INFO 05-11 19:22:42 [kv_cache_utils.py:637] Maximum concurrency for 28,672 tokens per request: 12.61x
+INFO 05-11 19:22:42 [core.py:159] init engine (profile, create kv cache, warmup model) took 0.92 seconds
+INFO 05-11 19:22:42 [core_client.py:439] Core engine process 0 ready.
+
+[baseline_sdpo_think_step100 / aime25] generating n=2 for 2 problems (per-problem streaming)...
+  [ 1/2] correct=2/2  running_acc=1.000  gt=70  extracted=['70', '70']  mean_len=1952
+  [ 2/2] correct=2/2  running_acc=1.000  gt=588  extracted=['588', '588']  mean_len=6289
+  acc@2 (mean): 1.000    any-correct rate: 1.000    (2/2)
+  wrote /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8/eval_results/diag1/baseline_sdpo_think_step100_aime25.json
+  loading lora as merged checkpoint: /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8/adapter/merged
+
+======================================================================
+Loading lora_sdpo_plus_narrative_exp8: /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8/adapter/merged
+INFO 05-11 19:25:17 [config.py:2968] Downcasting torch.float32 to torch.bfloat16.
+INFO 05-11 19:25:17 [config.py:717] This model supports multiple tasks: {'reward', 'classify', 'embed', 'score', 'generate'}. Defaulting to 'generate'.
+INFO 05-11 19:25:17 [config.py:2003] Chunked prefill is enabled with max_num_batched_tokens=16384.
+WARNING 05-11 19:25:17 [cuda.py:93] To see benefits of async output processing, enable CUDA graph. Since, enforce-eager is enabled, async output processor cannot be used
+huggingface/tokenizers: The current process just got forked, after parallelism has already been used. Disabling parallelism to avoid deadlocks...
+To disable this warning, you can either:
+	- Avoid using `tokenizers` before the fork if possible
+	- Explicitly set the environment variable TOKENIZERS_PARALLELISM=(true | false)
+INFO 05-11 19:25:18 [core.py:58] Initializing a V1 LLM engine (v0.8.5.post1) with config: model='/home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8/adapter/merged', speculative_config=None, tokenizer='/home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8/adapter/merged', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, override_neuron_config=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.bfloat16, max_seq_len=28672, download_dir=None, load_format=LoadFormat.AUTO, tensor_parallel_size=1, pipeline_parallel_size=1, disable_custom_all_reduce=False, quantization=None, enforce_eager=True, kv_cache_dtype=auto,  device_config=cuda, decoding_config=DecodingConfig(guided_decoding_backend='auto', reasoning_backend=None), observability_config=ObservabilityConfig(show_hidden_metrics=False, otlp_traces_endpoint=None, collect_model_forward_time=False, collect_model_execute_time=False), seed=None, served_model_name=/home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8/adapter/merged, num_scheduler_steps=1, multi_step_stream_outputs=True, enable_prefix_caching=True, chunked_prefill_enabled=True, use_async_output_proc=False, disable_mm_preprocessor_cache=False, mm_processor_kwargs=None, pooler_config=None, compilation_config={"splitting_ops":[],"compile_sizes":[],"cudagraph_capture_sizes":[],"max_capture_size":0}
+WARNING 05-11 19:25:18 [utils.py:2522] Methods determine_num_available_blocks,device_config,get_cache_block_size_bytes,initialize_cache not implemented in <vllm.v1.worker.gpu_worker.Worker object at 0x72e528a6bb50>
+INFO 05-11 19:25:18 [parallel_state.py:1004] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, TP rank 0
+INFO 05-11 19:25:18 [cuda.py:221] Using Flash Attention backend on V1 engine.
+WARNING 05-11 19:25:18 [topk_topp_sampler.py:69] FlashInfer is not available. Falling back to the PyTorch-native implementation of top-p & top-k sampling. For the best performance, please install FlashInfer.
+INFO 05-11 19:25:18 [gpu_model_runner.py:1329] Starting to load model /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8/adapter/merged...
+Loading safetensors checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:02<00:00,  2.39s/it]
+Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:02<00:00,  2.39s/it]
+
+INFO 05-11 19:25:21 [loader.py:458] Loading weights took 2.64 seconds
+INFO 05-11 19:25:21 [gpu_model_runner.py:1347] Model loading took 15.2683 GiB and 2.767441 seconds
+INFO 05-11 19:25:22 [kv_cache_utils.py:634] GPU KV cache size: 361,456 tokens
+INFO 05-11 19:25:22 [kv_cache_utils.py:637] Maximum concurrency for 28,672 tokens per request: 12.61x
+INFO 05-11 19:25:22 [core.py:159] init engine (profile, create kv cache, warmup model) took 0.94 seconds
+INFO 05-11 19:25:22 [core_client.py:439] Core engine process 0 ready.
+
+[lora_sdpo_plus_narrative_exp8 / aime25] generating n=2 for 2 problems (per-problem streaming)...
+  [ 1/2] correct=1/2  running_acc=0.500  gt=70  extracted=['70', '']  mean_len=13499
+  [ 2/2] correct=0/2  running_acc=0.250  gt=588  extracted=['', '']  mean_len=24576
+  acc@2 (mean): 0.250    any-correct rate: 0.500    (1/2)
+  wrote /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8/eval_results/diag1/lora_sdpo_plus_narrative_exp8_aime25.json
+
+Experiment 8 sanity eval complete. Outputs in /home/ubuntu/epistemic-recovery/limo_experiment/sdpo_limo_llamafactory/experiments/experiment8/eval_results/diag1/
+baseline_sdpo_think_step100_aime25.json
+lora_sdpo_plus_narrative_exp8_aime25.json
+run.log
