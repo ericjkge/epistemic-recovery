@@ -1,0 +1,48 @@
+{
+  "n_problems": 4000,
+  "num_chains": 1,
+  "max_rounds": 2,
+  "pass_at_1_round_rate": [
+    0.773,
+    0.79625
+  ],
+  "pass_at_1_round_correct": [
+    3092,
+    3185
+  ],
+  "chain_pass_at_1_round_rate": [
+    0.773,
+    0.79625
+  ],
+  "chain_pass_at_1_round_correct": [
+    3092,
+    3185
+  ],
+  "model": "baseline",
+  "adapter": null,
+  "merged": null,
+  "model_path": "beanie00/math-SDPO-Qwen3-8B-think-step-100",
+  "injection_phrase": " Wait, that might be wrong. Let's try some different approaches.\n\n",
+  "cumulative_token_cap": 30720,
+  "args": {
+    "seeds": "outputs/dapo_pass2/seed_problems.jsonl",
+    "output_dir": "outputs/dapo_pass2",
+    "model": "baseline",
+    "adapter": null,
+    "merged": null,
+    "num_chains": 1,
+    "max_rounds": 2,
+    "max_tokens_r1": 20000,
+    "max_tokens_r2": 10720,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
+    "frequency_penalty": 0.0,
+    "max_model_len": 32768,
+    "gpu_memory_utilization": 0.9,
+    "tensor_parallel_size": 1,
+    "max_problems": 0,
+    "seed": 43,
+    "injection_phrase": null
+  }
+}
