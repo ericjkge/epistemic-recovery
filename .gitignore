@@ -164,6 +164,10 @@ limo_experiment/sdpo_limo_llamafactory/experiments/**/checkpoint-*/
 # Smoke/dryrun experiments — local-only, not for git
 limo_experiment/sdpo_limo_llamafactory/experiments/experiment_smoke/
 limo_experiment/sdpo_limo_llamafactory/experiments/experiment_dryrun/
+# Byte-compiled caches under experiments/ (the !experiments/** rule above re-includes
+# everything, so re-exclude pycache explicitly)
+limo_experiment/sdpo_limo_llamafactory/experiments/**/__pycache__/
+limo_experiment/sdpo_limo_llamafactory/experiments/**/*.py[cod]
 
 # Eval venv and locally-generated merged model (regenerated via eval/merge_lora.py)
 limo_experiment/sdpo_limo_llamafactory/.venv-eval/
