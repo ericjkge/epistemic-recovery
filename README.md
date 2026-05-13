@@ -92,13 +92,6 @@ The off-policy adapter uses LIMO-v2 style math reasoning traces. The on-policy d
 contains 132 successful SDPO recovery traces collected by interrupting the model's own
 generations and keeping examples where the continuation recovered a correct answer.
 
-The distinction matters:
-
-- **Off-policy** data comes from other model families and can bring in stronger math
-  reasoning styles, but risks distribution shift and capability overwrite.
-- **On-policy** data comes from the target SDPO model itself and should be better
-  aligned, but our collected set was too small to train a stable adapter.
-
 ## Attribution
 
 This repository builds on the open-source self-distillation analysis code from Kim et
