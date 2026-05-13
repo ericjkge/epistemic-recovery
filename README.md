@@ -3,10 +3,12 @@
 This repository contains our 6.8610 final project on recovering self-regulation in
 self-distilled reasoning models.
 
-Self-distillation can make model outputs shorter, cleaner, and more confident. The
-problem we study is that this same compression can suppress epistemic verbalization:
-moments where a model says things like "wait", "maybe", "alternatively", or "let me
-check" and uses those tokens to revise its reasoning.
+Self-distillation can make model outputs shorter, cleaner, and more confident. In some
+settings this is useful: SDPO-style training has been reported to improve domains such
+as scientific reasoning, tool use, and coding. The problem we study is that this same
+compression can suppress epistemic verbalization: moments where a model says things
+like "wait", "maybe", "alternatively", or "let me check" and uses those tokens to
+revise its reasoning.
 
 Our question is:
 
@@ -61,6 +63,27 @@ limo_experiment/sdpo_limo_llamafactory/eval/
 
 limo_experiment/sdpo_limo_llamafactory/data/
     Local dataset conversion outputs and evaluation data.
+```
+
+## Reproducing the Main Evaluation
+
+The main off-policy results are stored under:
+
+```text
+limo_experiment/sdpo_limo_llamafactory/experiments/experiment2/eval_results/
+```
+
+The headline table comes from:
+
+```text
+limo_experiment/sdpo_limo_llamafactory/experiments/experiment2/eval_results/epistemic_summary.csv
+```
+
+To run the evaluation pipeline from the project subdirectory, use:
+
+```bash
+cd limo_experiment/sdpo_limo_llamafactory
+EXPERIMENT=experiment2 ./eval.sh
 ```
 
 ## Training Data
