@@ -3,12 +3,10 @@
 This repository contains our 6.8610 final project on recovering self-regulation in
 self-distilled reasoning models.
 
-Self-distillation can make model outputs shorter, cleaner, and more confident. In some
-settings this is useful: SDPO-style training has been reported to improve domains such
-as scientific reasoning, tool use, and coding. The problem we study is that this same
-compression can suppress epistemic verbalization: moments where a model says things
-like "wait", "maybe", "alternatively", or "let me check" and uses those tokens to
-revise its reasoning.
+Self-distillation can make model outputs shorter, cleaner, and more confident. The
+problem we study is that this same compression can suppress epistemic verbalization:
+moments where a model says things like "wait", "maybe", "alternatively", or "let me
+check" and uses those tokens to revise its reasoning.
 
 Our question is:
 
@@ -34,33 +32,6 @@ We test three recovery directions:
    see whether the external reasoning style can be grounded in the model's own
    distribution.
 
-## Main Findings
-
-The off-policy LIMO LoRA improves AIME25 performance and strongly increases epistemic
-marker usage:
-
-| Model | AIME25 pass@1 | AIME25 pass@4 | AIME25 pass@8 | Avg. epistemic markers / response |
-| --- | ---: | ---: | ---: | ---: |
-| SDPO baseline | 39.2% | 60.6% | 70.0% | 61.3 |
-| SDPO + LIMO LoRA | 50.0% | 73.4% | 80.0% | 219.4 |
-
-This result is promising, but not cleanly causal. The adapter may be transferring a
-broader LIMO/DeepSeek-style math reasoning distribution, not only restoring a suppressed
-epistemic behavior. We also observe repetition pathologies, including long loops around
-phrases such as "Alternatively, perhaps...".
-
-The preservation story is mixed. Off-policy math recovery appears to trade off against
-some of the science/general-reasoning strengths that made the SDPO checkpoint useful in
-the first place. This means the main challenge is not simply "make the model say wait
-more often"; it is to restore self-regulation while preserving the base policy's
-existing capabilities.
-
-The on-policy and hybrid adapters did not produce viable generations in our sanity
-runs. With only 132 on-policy recovery traces, the adapters tended to collapse into
-repetition or endless checking loops. We therefore treat the on-policy results as a
-negative result and a pointer toward more constrained training, larger and more diverse
-on-policy data, or RL-style objectives that reward both recovery and correctness.
-
 ## Repository Layout
 
 Most of our project code and experiment artifacts are in:
@@ -76,7 +47,7 @@ limo_experiment/sdpo_limo_llamafactory/README.md
     Detailed setup and evaluation notes for the SDPO + LIMO LoRA pipeline.
 
 limo_experiment/sdpo_limo_llamafactory/experiments/experiment2/
-    Main off-policy LIMO LoRA run used for the AIME25 results.
+    Off-policy LIMO LoRA run.
 
 limo_experiment/sdpo_limo_llamafactory/experiments/experiment8_onpolicy/
     On-policy-only adapter run.
@@ -86,38 +57,10 @@ limo_experiment/sdpo_limo_llamafactory/experiments/experiment8_v2/
     Hybrid on-policy plus off-policy adapter runs.
 
 limo_experiment/sdpo_limo_llamafactory/eval/
-    Evaluation scripts for AIME, epistemic-token analysis, repetition analysis,
-    and SciKnowEval chemistry regression checks.
+    Evaluation scripts for AIME, epistemic-token analysis, and repetition analysis.
 
 limo_experiment/sdpo_limo_llamafactory/data/
     Local dataset conversion outputs and evaluation data.
-```
-
-## Reproducing the Main Evaluation
-
-The main off-policy results are stored under:
-
-```text
-limo_experiment/sdpo_limo_llamafactory/experiments/experiment2/eval_results/
-```
-
-The headline table comes from:
-
-```text
-limo_experiment/sdpo_limo_llamafactory/experiments/experiment2/eval_results/epistemic_summary.csv
-```
-
-To run the evaluation pipeline from the project subdirectory, use:
-
-```bash
-cd limo_experiment/sdpo_limo_llamafactory
-EXPERIMENT=experiment2 ./eval.sh
-```
-
-The evaluation script can also run the SciKnowEval chemistry regression check:
-
-```bash
-EXPERIMENT=experiment2 SKIP_AIME=1 SKIP_SCIKNOWEVAL=0 SKIP_EPISTEMIC=1 ./eval.sh
 ```
 
 ## Training Data
@@ -137,8 +80,8 @@ The distinction matters:
 
 This repository builds on the open-source self-distillation analysis code from Kim et
 al. and the SDPO codebase. Our contribution is the epistemic-recovery pipeline,
-off-policy/on-policy LoRA experiments, evaluation scripts, and analysis of the recovery
-versus preservation tradeoff.
+off-policy/on-policy LoRA experiments, evaluation scripts, and project-specific
+analysis.
 
 Relevant upstream work:
 
