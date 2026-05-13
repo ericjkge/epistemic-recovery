@@ -36,6 +36,10 @@ We test three recovery directions:
 
 ## Repository Layout
 
+This project was built on top of the existing SDPO/self-distillation codebase used to
+produce the initial SDPO model. As a result, some files and directories are inherited
+infrastructure and may not be directly related to our project-specific experiments.
+
 Most of our project code and experiment artifacts are in:
 
 ```text
